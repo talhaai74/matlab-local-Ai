@@ -102,6 +102,13 @@ ru looks at each PC by itself and remembers what it learned in
   erased again. Timeouts are set from this PC's measured speed, so a slow PC is
   not cut off.
 
+**Before you start on a lab PC:** double-click `Matlab.ru\ru_prep.bat` (or type
+`ru prep` in MATLAB). It shows the free memory, lists your own heavy programs
+(browsers, Teams/Discord/Telegram/WhatsApp, Spotify/VLC, Steam, a leftover ru
+engine), asks, closes them, and shows the biggest programs still running. It never
+touches Windows, MATLAB, antivirus, lab or exam software, other users' programs or
+Office files, and it changes no settings.
+
 **Lab PCs**
 
 | Situation | What happens |
@@ -148,6 +155,7 @@ installed on the PC.
 | `ru status` / `ru start` / `ru stop` | this PC (processor, RAM, graphics), models that fit, speed; start / stop the engine |
 | `ru gpu auto` / `on` / `off` | graphics card use (auto: dedicated yes, integrated no) |
 | `ru verbose on` / `off` | show every step, attempt, comment and time (off: only code + output) |
+| `ru prep` | free memory: closes your browsers, chat, music and game programs (keeps the ru engine) |
 | `ru list` / `ru test` | list the solver library / run the offline self-test |
 | `ru --retrieve <text>` | show which topic and solved examples ru would use (no AI call) |
 
@@ -203,6 +211,7 @@ Matlab.ru\            <- copy this folder to the pendrive
   ru.m                main program
   ru_selftest.m       offline self-test (ru test)
   setup_ru.bat        one-time download of the portable Ollama and models
+  ru_prep.bat         frees memory on a lab PC before MATLAB (closes your heavy programs)
   start_ru.bat        optional manual engine start
   startup.m           optional: starts the session log when MATLAB starts here
   memory.txt          your permanent rules
