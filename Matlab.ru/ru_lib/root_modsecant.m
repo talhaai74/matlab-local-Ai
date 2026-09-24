@@ -21,6 +21,10 @@ f = ru_tofunc(f, {'x'});
 x = x0; iter = 0; ea = 100; hist = zeros(0,6);
 while true
     fxc = f(x);
+    if fxc == 0
+        ea = 0;                      % x is an exact root
+        break
+    end
     xpert = x + delta*x;
     if xpert == x
         xpert = x + delta;

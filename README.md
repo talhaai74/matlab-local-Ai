@@ -3,8 +3,19 @@
 `ru` runs inside the MATLAB Command Window of any Windows PC, with no internet.
 You give it a problem as plain text and equations (or a screenshot). It writes a
 MATLAB script, **runs it**, checks the result and repairs the code until it works.
-The results stay in your workspace. It also remembers the conversation, so you can
+You see only the MATLAB commands (no comments) and what MATLAB printed; the
+results stay in your workspace. It also remembers the conversation, so you can
 ask follow-up questions.
+
+```
+>> ru find the root of x^2 + 2x + 1
+f = @(x) x.^2 + 2*x + 1;
+r = roots([1 2 1])
+
+r =
+    -1
+    -1
+```
 
 ```
 >> cd E:\Matlab.ru
@@ -26,8 +37,11 @@ ask follow-up questions.
 * Screenshots of **figures** (trusses, beams) are described in words by the vision
   model and can be wrong: `ru img` always shows the text it read and lets you fix
   it before solving.
-* A CPU-only PC takes 30 s to 3 min per answer. The first call loads the model
-  from the pendrive (USB 3 is much faster than USB 2).
+* Speed depends on the PC (see *Every PC: hardware, speed, graphics card*). On a
+  processor-only PC an answer takes about 1 to 3 min with qwen2.5-coder:3b and
+  several minutes with qwen3.5:9b; with a good NVIDIA card, seconds. The first
+  answer of a session also loads the model from the pendrive (USB 3 is much
+  faster than USB 2).
 
 ## Setup
 
@@ -52,6 +66,51 @@ ask follow-up questions.
 
 `ru` starts the engine by itself (a minimized "ru engine" window; keep it open).
 `ru stop` closes it and frees the memory.
+
+## Every PC: hardware, speed, graphics card
+
+ru looks at each PC by itself and remembers what it learned in
+`brain\pc_<computer name>.json`. `ru status` shows all of it.
+
+* **Model choice, quality first.** ru measures the free memory (RAM, plus the
+  memory of a dedicated graphics card) and uses the **strongest model that fits**.
+  With your pendrive (qwen3.5:9b and qwen2.5-coder:3b): a PC with about 10 GB free
+  memory or more uses qwen3.5:9b; an 8 GB PC uses qwen2.5-coder:3b (and cannot read
+  screenshots, because only 9b can). If a stronger model would fit after closing
+  programs, ru says so once. If the engine still reports "not enough memory", ru
+  switches to the next model by itself and remembers it for this PC.
+* **Graphics card and processor together.** A dedicated card (NVIDIA through CUDA,
+  AMD/other dedicated cards through Vulkan) holds as much of the model as fits;
+  the processor runs the rest. This split is automatic.
+* **Integrated graphics are switched off** (Intel HD/UHD/Iris, AMD Radeon
+  Graphics in laptops' processors). They share the normal RAM, so they add no
+  memory, and old lab drivers are known to make the AI slower or produce garbage.
+  `ru gpu on` allows them anyway; `ru gpu off` forces processor only.
+* **Old or broken graphics drivers.** If the engine crashes in the graphics
+  driver, or the output is garbage, ru restarts the engine on the processor and
+  remembers that for this PC (`ru gpu auto` tries the card again). An NVIDIA card
+  needs driver 551.61 or newer; with an older driver the processor is used.
+* **Old processors** (Core 2 Duo, Pentium dual-core, no AVX) work: the engine has
+  a build for them. They are slow; qwen2.5-coder:3b is chosen on such PCs when the
+  memory is small.
+* **Nothing is loaded twice.** Every request uses the same context size (a
+  change would make the engine reload the whole model), the fixed part of the
+  prompt comes first so the engine can reuse it, and a model stays in memory for
+  60 minutes after the last question. While you paste a problem into the `ru` box,
+  the model already loads in the background.
+* **Waiting.** A one-line progress note (`ru: writing code ...`) is shown and
+  erased again. Timeouts are set from this PC's measured speed, so a slow PC is
+  not cut off.
+
+**Lab PCs**
+
+| Situation | What happens |
+|---|---|
+| Windows 10 / 11 | works |
+| Windows 7 / 8.1 | the AI engine cannot run (Ollama needs Windows 10). ru still runs the verified solutions and shows the closest solved example for other problems. Or run the engine on your own laptop in the same network and connect: `ru host <laptop IP>` |
+| MATLAB R2016b - R2019b | works; ru tells the AI which newer functions this MATLAB lacks, and converts "double-quoted" strings for R2016b |
+| MATLAB older than R2016b | not supported (no JSON functions, no local functions in scripts) |
+| Antivirus / lab policy blocks programs on USB drives | ru detects it and says so; it does not try to get around it. Verified solutions still work |
 
 ## Models
 
@@ -86,7 +145,9 @@ installed on the PC.
 | `ru history [n]` / `ru new` | show / clear the conversation memory |
 | `ru remember <rule>` / `ru rules` | permanent rules, e.g. `ru remember my student ID is 1904032` |
 | `ru last` / `ru save <name>` | show / save the last code as `<name>.m` |
-| `ru status` / `ru start` / `ru stop` | engine and model status, start, stop |
+| `ru status` / `ru start` / `ru stop` | this PC (processor, RAM, graphics), models that fit, speed; start / stop the engine |
+| `ru gpu auto` / `on` / `off` | graphics card use (auto: dedicated yes, integrated no) |
+| `ru verbose on` / `off` | show every step, attempt, comment and time (off: only code + output) |
 | `ru list` / `ru test` | list the solver library / run the offline self-test |
 | `ru --retrieve <text>` | show which topic and solved examples ru would use (no AI call) |
 
@@ -107,7 +168,8 @@ that contain them type just `ru` and paste into the box.
 3. **Everything is executed.** The script runs in MATLAB; errors go back to the AI
    with targeted hints (up to 4 attempts; when it repeats an error it restarts
    without the example that misled it).
-4. **Checks before accepting a result:**
+4. **Silent checks before accepting a result** (ru does them itself; the code
+   stays short and nothing extra is printed):
    * code that calls functions which do not exist on this computer is rejected
      (catches invented functions and missing toolboxes);
    * every method or MATLAB function the problem names (bisection, RK4,
@@ -115,9 +177,12 @@ that contain them type just `ru` and paste into the box.
    * every significant number in the problem must be used;
    * no output, `NaN`/`Inf`, infinite loops, `input()`, `clear`, `cd`, file
      deletion and system commands are refused;
-   * the script must print the equations it used and an independent check
-     (`fzero`, `integral`, `ode45`, residuals, analytical solution).
-   Remaining doubts are printed as `[ru] Check: ...` lines.
+   * the answer itself is tested in the workspace: `A*x = b` for linear systems,
+     `f(root)` against `fzero` for roots, `A*v = lambda*v` for eigenpairs, and an
+     "exact" ODE solution the AI wrote must really satisfy the ODE;
+   * `fprintf(fmt, [t y])` (a table printed in the wrong order) is caught.
+   A failed check goes back to the AI; if it is still failing after the last
+   attempt, one `[ru] Check: ...` line is printed under the result.
 
 ## Memory
 
@@ -148,7 +213,8 @@ Matlab.ru\            <- copy this folder to the pendrive
   Endfiles\           your own course M-files (ru can use them: "use my bisection function")
   model\              AI models (Ollama format); weights are not in git
   ollama\             portable Ollama (created by setup_ru.bat)
-  brain\              memory, logs, settings, temporary scripts (created at run time)
+  brain\              memory, logs, settings, what ru learned about each PC
+                      (pc_<name>.json), temporary scripts (created at run time)
 Slides\               the CE206 slides and quiz PDFs the knowledge base was built from
 ```
 
@@ -176,7 +242,9 @@ Then run `ru test`. Examples with `% SELFTEST: skip` (they need data files) are 
 |---|---|
 | `No AI model is available` | `ru status`; run `setup_ru.bat` on a PC with internet |
 | `model ... INCOMPLETE - missing file(s)` | copy the missing `sha256-...` blob into `model\blobs` or re-run `setup_ru.bat` |
-| very slow / timeout | close other programs; `ru model qwen2.5-coder:3b` or `qwen3.5:2b` |
+| very slow / timeout | `ru status` shows the speed on this PC; close other programs; `ru model qwen2.5-coder:3b` |
+| wrong or garbage answers on one PC only | `ru gpu off` (a bad graphics driver); `ru gpu auto` to try the card again |
+| want to see what ru did | `ru verbose on`; the full log is `brain\ru_log.txt`, the engine's is `brain\engine.log` |
 | `ru img` says no vision model | install `qwen3.5:4b` with `setup_ru.bat` |
 | wrong numbers read from a screenshot | correct them in the check box, or paste the text with `ru` |
 | a result looks wrong | `ru again`, `ru think <problem>`, or state the method and all numbers explicitly |
@@ -194,6 +262,12 @@ Then run `ru test`. Examples with `% SELFTEST: skip` (they need data files) are 
   when a bracket end was an exact root.
 
 Tested here with GNU Octave 8.4 and the same qwen2.5-coder:3b weights served
-through llama.cpp: `ru test` passes 213 checks (the `xlswrite` example needs
-MATLAB). The qwen3.5 models and the Windows scripts could not be run in that
-environment; they follow the official Ollama documentation.
+through llama.cpp on a 4-core processor without graphics card: `ru test` passes
+213 checks (the `xlswrite` example needs MATLAB). One answer took about 60-70 s
+there (about 4,000 prompt tokens read, 100-270 tokens written); a correction
+round took 13-14 s because the engine reuses the unchanged start of the prompt.
+Model choice for 8/12/16 GB PCs, the integrated-graphics policy, the switch to
+the processor after a graphics-driver crash and the memory fallback were tested
+with a simulated engine. Real MATLAB, the qwen3.5 models, Windows 7 and the
+Windows scripts could not be run in that environment; they follow the official
+Ollama documentation.

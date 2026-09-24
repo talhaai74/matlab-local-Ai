@@ -20,6 +20,10 @@ xim1 = x0; xi = x1;
 fim1 = f(xim1); fi = f(xi);
 iter = 0; ea = 100; hist = zeros(0,6);
 while true
+    if fi == 0
+        ea = 0;                      % xi is an exact root
+        break
+    end
     denom = fim1 - fi;
     if denom == 0
         error('ru_lib:root_secant:zerodenom', ...
