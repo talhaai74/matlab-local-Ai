@@ -6,7 +6,8 @@ CHEATSHEET:
 - Fixed-step solvers (t column, y one row per time like ode45; last step shortened if h does not divide the range):
   [t,y] = ode_euler(dydt,[t0 tf],y0,h); ode_heun(dydt,[t0 tf],y0,h) (no corrector iteration) or
   ode_heun(dydt,[t0 tf],y0,h,es,maxit) (iterate the corrector until ea < es %); ode_midpoint; ode_ralston; ode_rk4.
-  Adaptive: [t,y] = ode45(dydt,[t0 tf],y0) or ode45(dydt, t0:h:tf, y0) to get values at those times.
+  Adaptive: [t,y] = ode45(dydt,[t0 tf],y0) returns ITS OWN time points (different length from fixed-step results).
+  To compare methods at the same times: [t,y] = ode_rk4(dydt,[t0 tf],y0,h); [~,y45] = ode45(dydt,t,y0);
 - dydt must be @(t,y) and return a COLUMN vector for systems: @(t,y) [y(2); -g/l*sin(y(1))].
 - Second-order ODE: set y1 = x, y2 = dx/dt -> first-order system. Initial conditions vector y0 = [x0; v0].
 - Analytical solutions to compare: evaluate the formula at the same t; true error et = abs((true-num)/true)*100.

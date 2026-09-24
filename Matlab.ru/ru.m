@@ -44,6 +44,9 @@ switch cmd
     case '--startup'
         local_startDiary(root, true);
         return
+    case '--retrieve'
+        local_showRetrieval(root, rest);
+        return
     case {'help', '-h', '--help', '?', '-?'}
         if alone
             help('ru');
@@ -372,6 +375,24 @@ else
 end
 end
 
+function local_showRetrieval(root, prompt)
+% Diagnostic: what ru would use for this prompt (no AI call).
+prompt = local_tidyPrompt(local_ascii(prompt));
+kb = local_kb(root);
+ctx = local_retrieve(kb, prompt);
+fprintf('[ru] question mode: %d, greeting: %d\n', local_isQuestion(prompt), local_isGreeting(prompt));
+fprintf('[ru] topics: %s\n', strjoin(ctx.topics, ', '));
+for k = ctx.examples
+    fprintf('[ru] example: %s\n', kb.examples(k).title);
+end
+fprintf('[ru] library help: %s\n', strjoin({kb.lib(ctx.libFull).name}, ', '));
+if ctx.direct > 0
+    fprintf('[ru] verified solution that would run directly: %s\n', kb.examples(ctx.direct).title);
+else
+    fprintf('[ru] no verified solution matches exactly; the AI would write the code\n');
+end
+end
+
 function local_greet()
 fprintf(['[ru] Hello! Give me any MATLAB / numerical-methods problem, e.g.\n' ...
     '       ru find the root of x^3 - 10*x^2 + 5 between 0.6 and 0.8 by bisection\n' ...
@@ -432,7 +453,12 @@ kb = local_kb(root);
 env = local_env();
 conv = local_convLoad(root);
 follow = local_isFollowUp(prompt, conv);
-ctx = local_retrieve(kb, prompt);
+if follow
+    ctx = local_retrieve(kb, [conv{end}.prompt char(10) prompt]);
+    ctx.direct = 0;
+else
+    ctx = local_retrieve(kb, prompt);
+end
 turnPrompt = prompt;
 if ~isempty(opts.turnPrompt)
     turnPrompt = opts.turnPrompt;
@@ -487,6 +513,7 @@ msgs = baseMsgs;
 prevCode = '';
 best = struct('code', '', 'output', '', 'warnings', {{}});
 askedNumbers = false;
+requirements = '';
 for attempt = 1:maxAttempts
     fprintf('[ru] Asking %s (attempt %d of %d)', model, attempt, maxAttempts);
     if attempt == 1
@@ -523,6 +550,16 @@ for attempt = 1:maxAttempts
             end
             fprintf(2, '[ru] The script ran, but: %s\n', local_firstLine(feedback));
             local_log(root, sprintf('ATTEMPT %d RAN WITH ISSUES:\n%s\nISSUE: %s', attempt, code, feedback));
+            if ~isempty(strfind(feedback, 'but your script does not use it'))
+                % Small models copy their previous reply; restart from the problem with the requirement up front.
+                requirements = [requirements char(10) '- ' regexprep(feedback, '\s*and rewrite the complete script\.$', '.')]; %#ok<AGROW>
+                msgs = local_withRequirements(baseMsgs, requirements);
+                prevCode = code;
+                if attempt < maxAttempts
+                    fprintf('[ru] Asking again with that requirement stated in the problem...\n');
+                end
+                continue
+            end
         else
             feedback = local_feedback(info, kb, code, cut, attempt == maxAttempts - 1);
             local_log(root, sprintf('ATTEMPT %d CODE:\n%s\nERROR: %s', attempt, code, info.message));
@@ -540,7 +577,7 @@ for attempt = 1:maxAttempts
     if isempty(shown)
         shown = strtrim(reply);
     end
-    msgs = [baseMsgs, {local_msg('assistant', ['```matlab' char(10) shown char(10) '```']), ...
+    msgs = [local_withRequirements(baseMsgs, requirements), {local_msg('assistant', ['```matlab' char(10) shown char(10) '```']), ...
         local_msg('user', feedback)}];
     if attempt < maxAttempts
         fprintf('[ru] Sending it back to the AI to fix it...\n');
@@ -562,6 +599,17 @@ fprintf(2, '[ru]       into parts; try  ru again  or  ru think <problem>. See th
 local_writeText(fullfile(local_brain(root), 'last_code.txt'), prevCode);
 local_convAdd(root, 'solve', turnPrompt, prevCode, 'FAILED: no working code.', false);
 local_log(root, 'RESULT: FAILED');
+end
+
+function msgs = local_withRequirements(msgs, requirements)
+% Put extra requirements into the final problem message (before and after the problem text).
+if isempty(strtrim(requirements))
+    return
+end
+last = msgs{end};
+req = ['REQUIREMENTS (must follow):' requirements];
+last.content = [req char(10) char(10) last.content char(10) char(10) req];
+msgs{end} = last;
 end
 
 function m = local_msg(role, content)
@@ -623,6 +671,15 @@ if ~isempty(regexp(out, '(?<![A-Za-z])(NaN|-?Inf)(?![A-Za-z])', 'once'))
 end
 if ~isempty(regexp(out, 'Warning: (Matrix is (close to )?singular|Rank deficient|Failure at t)', 'once'))
     warnings{end+1} = 'MATLAB printed a numerical warning (singular matrix / rank deficient / ODE failure).';
+end
+absent = local_missingMethods(prompt, code);
+if ~isempty(absent) && attempt < maxAttempts
+    feedback = sprintf(['The problem asks for %s, but your script does not use it. Solve it exactly with the requested ' ...
+        'function/method (never replace it with a guessed or "known" value), and rewrite the complete script.'], ...
+        strjoin(absent, ' and '));
+    return
+elseif ~isempty(absent)
+    warnings{end+1} = sprintf('The problem asks for %s, but the code does not use it.', strjoin(absent, ' and '));
 end
 missing = local_missingNumbers(prompt, code);
 if ~isempty(missing)
@@ -716,8 +773,17 @@ end
 if ~isempty(regexp(m, 'must return a column vector|column vector', 'once'))
     h = [h sprintf('- ODE functions must return a COLUMN vector: [dy1; dy2] with semicolons.\n')];
 end
-if ~isempty(regexp(m, 'concatenat', 'once'))
-    h = [h sprintf('- Rows in [ ] must have the same number of columns; use ; between rows.\n')];
+sizeErr = ~isempty(regexp(m, ['concatenat|dimensions mismatch|nonconformant|Vectors must be the same length|' ...
+    'must have the same|incompatible sizes|Matrix dimensions must agree'], 'once'));
+adaptive = ~isempty(regexp(local_stripCode(code), '(ode45|ode23|ode113|ode15s)\s*\([^,]+,\s*\[[^\]]*\]', 'once'));
+if sizeErr && adaptive
+    h = [h sprintf(['- ode45(f, [t0 tf], y0) chooses its OWN time points, so its result has a different number of ' ...
+        'rows than your other method. To compare at the same times call it with that time vector: ' ...
+        '[t, y] = ode_rk4(f, [t0 tf], y0, h); [~, y45] = ode45(f, t, y0);\n'])];
+end
+if ~isempty(regexp(m, 'concatenat|dimensions mismatch', 'once'))
+    h = [h sprintf(['- The arrays joined with [ ] do not have matching sizes: check size() of every part; ' ...
+        'use x(:) for columns and the same number of rows.\n'])];
 end
 if ~isempty(regexp(m, 'Vectors must be the same length', 'once'))
     h = [h sprintf('- plot(x, y) needs x and y of the same length.\n')];
@@ -744,6 +810,86 @@ for k = 1:numel(cand)
 end
 if isempty(h) && ~isempty(code)
     h = sprintf('- Read the error message carefully and fix the cause, not the symptom.\n');
+end
+end
+
+function req = local_requiredCalls(prompt)
+% What the problem explicitly asks to use, as short instructions with call templates.
+req = local_missingMethods(prompt, '');
+end
+
+function absent = local_missingMethods(prompt, code)
+% MATLAB functions and numerical methods that the problem names but the code never uses.
+absent = {};
+p = lower(prompt);
+c = lower(local_stripCode(code));
+cc = lower(code);                         % comments count as evidence for hand-written methods
+funcs = {'fzero', 'fminsearch', 'fminbnd', 'roots', 'integral', 'integral2', 'quad', 'trapz', 'cumtrapz', ...
+    'ode45', 'ode23', 'ode113', 'ode15s', 'polyfit', 'polyval', 'interp1', 'interp2', 'spline', 'pchip', 'lu', ...
+    'chol', 'eig', 'inv', 'det', 'cond', 'norm', 'fft', 'ifft', 'gradient', 'meshgrid', 'mesh', 'surf', 'contour', ...
+    'subplot', 'histogram', 'ttest', 'ttest2', 'fitlm', 'readtable', 'xlsread', 'csvread', 'stem', 'plot3', ...
+    'semilogy', 'semilogx', 'loglog', 'expm', 'besselj', 'erf', 'cumsum', 'linsolve', 'plotmatrix'};
+for k = 1:numel(funcs)
+    fn = funcs{k};
+    asked = ~isempty(regexp(p, ['(using|use|with|by|via|apply|employ|matlab''?s?|built-in)\s+(the\s+)?(matlab\s+)?(built-in\s+)?' ...
+        fn '\>|\<' fn '\s*(\(|function|command)'], 'once'));
+    if asked && isempty(regexp(c, ['(?<![\w.])' fn '\s*\('], 'once'))
+        absent{end+1} = local_callTemplate(fn); %#ok<AGROW>
+    end
+end
+methods = {
+    'bisection|bisect|half-interval', 'root_bisection|\\(\\s*xl\\s*\\+\\s*xu\\s*\\)\\s*/\\s*2|bisect', 'the bisection method', '[xr, fx, ea, iter, tab] = root_bisection(f, xl, xu, es, maxit)'
+    'false position|regula[ -]?falsi', 'root_falseposition|false position|regula|falsi', 'the false-position (regula falsi) method', '[xr, fx, ea, iter, tab] = root_falseposition(f, xl, xu, es, maxit)'
+    'newton[- ]raphson|newton''s method|newtraph', 'root_newton|newton', 'the Newton-Raphson method', '[xr, fx, ea, iter, tab] = root_newton(f, df, x0, es, maxit)'
+    '(?<!modified )secant', 'root_secant|root_modsecant|secant', 'the secant method', '[xr, fx, ea, iter, tab] = root_secant(f, x0, x1, es, maxit)'
+    'fixed[- ]point|simple iteration', 'root_fixedpoint|fixed', 'fixed-point iteration', '[xr, res, ea, iter, tab] = root_fixedpoint(g, x0, es, maxit)'
+    'golden[- ]section', 'opt_golden|golden', 'golden-section search', 'xopt = opt_golden(f, xl, xu, es)  (minimum; use -f for a maximum)'
+    'euler''?s? method|\\<euler\\>', 'ode_euler|euler', 'Euler''s method', '[t, y] = ode_euler(dydt, [t0 tf], y0, h)'
+    'heun', 'ode_heun|heun', 'Heun''s method', '[t, y] = ode_heun(dydt, [t0 tf], y0, h)'
+    'midpoint method', 'ode_midpoint|midpoint', 'the midpoint method', '[t, y] = ode_midpoint(dydt, [t0 tf], y0, h)'
+    'ralston', 'ode_ralston|ralston', 'Ralston''s method', '[t, y] = ode_ralston(dydt, [t0 tf], y0, h)'
+    'runge[- ]kutta|\\<rk4\\>|fourth[- ]order rk', 'ode_rk4|rk4|k4', 'the 4th-order Runge-Kutta method', '[t, y] = ode_rk4(dydt, [t0 tf], y0, h)'
+    'simpson', 'integ_simp|simpson|/\\s*3|3\\s*\\*\\s*h\\s*/\\s*8', 'Simpson''s rule', 'I = integ_simp13(f, a, b, n)  (n even) or integ_simpdata(x, y) for data'
+    'trapezoid', 'trapz|integ_trap|trapezoid', 'the trapezoidal rule', 'I = integ_trap(f, a, b, n) or trapz(x, y) for data'
+    'romberg', 'integ_romberg|romberg', 'Romberg integration', '[I, ea, iter, R] = integ_romberg(f, a, b, es)'
+    'gauss(ian)?[- ](legendre|quadrature)|two-point gauss|three-point gauss', 'integ_gauss|gauss', 'Gauss quadrature', 'I = integ_gauss(f, a, b, npts)'
+    'boole', 'boole', 'Boole''s rule', 'I = integ_newtoncotes(f, a, b, ''boole'')'
+    'richardson', 'diff_richardson|richardson|4\\s*/\\s*3', 'Richardson extrapolation', 'D = diff_richardson(f, x, h1, h2)'
+    '\\<lu\\>|lu decomposition|lu factori', '(?<![\\w.])lu\\s*\\(|lin_lu', 'LU factorization', '[L, U] = lu(A); d = L\\b; x = U\\d;'
+    'cholesky', 'chol|lin_cholesky', 'Cholesky factorization', 'U = chol(A); x = U\\(U''\\b);'
+    'gauss[- ]seidel', 'lin_gaussseidel|seidel', 'the Gauss-Seidel method', '[x, ea, iter] = lin_gaussseidel(A, b, es, maxit)'
+    'jacobi', 'lin_jacobi|jacobi', 'the Jacobi method', '[x, ea, iter] = lin_jacobi(A, b, es, maxit)'
+    'cramer', 'lin_cramer|cramer|det\\s*\\(', 'Cramer''s rule', 'x = lin_cramer(A, b)'
+    'partial pivoting|pivoting', 'lin_gausspivot|pivot', 'Gauss elimination with partial pivoting', '[x, D] = lin_gausspivot(A, b, true)'
+    'tridiagonal|thomas', 'lin_tridiag|tridiag|thomas', 'the tridiagonal (Thomas) algorithm', 'x = lin_tridiag(e, f, g, r)'
+    'lagrange', 'interp_lagrange|lagrange', 'the Lagrange polynomial', 'yi = interp_lagrange(x, y, xi)'
+    'divided difference|newton''s interpolating|newton interpolating', 'interp_newton|interp_divdiff|divided|polyfit', 'Newton''s divided differences', '[yi, b] = interp_newton(x, y, xi)'
+    'power method', 'eig_power|power', 'the power method', '[lambda, v] = eig_power(A)'
+    'shooting', 'ode_shooting|shoot|fzero|res', 'the shooting method', 'solve the IVP with ode45 for a guessed slope and adjust it with fzero on the end residual'
+    'finite[- ]difference (method|approach)', 'ode_fdbvp|\\\\|tridiag|finite', 'the finite-difference method', 'build the tridiagonal system of the node equations and solve it with \\'
+    };
+for k = 1:size(methods, 1)
+    if ~isempty(regexp(p, methods{k, 1}, 'once')) && isempty(regexp(cc, methods{k, 2}, 'once'))
+        if strcmp(methods{k, 3}, 'Euler''s method') && ~isempty(regexp(p, 'euler''?s (formula|identity)', 'once'))
+            continue
+        end
+        absent{end+1} = [methods{k, 3} ' (e.g. ' methods{k, 4} ')']; %#ok<AGROW>
+    end
+end
+absent = unique(absent, 'stable');
+end
+
+function t = local_callTemplate(fn)
+T = {'integral', 'I = integral(f, a, b) with a vectorized f (.* ./ .^)'; 'fzero', 'xr = fzero(f, [xl xu]) or fzero(f, x0)';
+    'ode45', '[t, y] = ode45(dydt, tspan, y0)'; 'polyfit', 'p = polyfit(x, y, n); yi = polyval(p, xi)';
+    'interp1', 'yi = interp1(x, y, xi, method)'; 'spline', 'yi = spline(x, y, xi)'; 'trapz', 'I = trapz(x, y)';
+    'eig', '[V, D] = eig(A)'; 'lu', '[L, U] = lu(A); x = U\(L\b)'; 'roots', 'r = roots(c)'; 'fft', 'Y = fft(y)/n';
+    'fminsearch', 'p = fminsearch(@(p) sum((y - model(p, x)).^2), p0)'; 'fminbnd', 'x = fminbnd(f, a, b)';
+    'gradient', 'dy = gradient(y, h)'; 'cumtrapz', 'I = cumtrapz(x, y)'};
+t = [fn '()'];
+k = find(strcmp(T(:,1), fn), 1);
+if ~isempty(k)
+    t = sprintf('%s (e.g. %s)', t, T{k, 2});
 end
 end
 
@@ -855,6 +1001,12 @@ for pass = 1:5
     else
         user = [user 'PROBLEM:' char(10) prompt]; %#ok<AGROW>
     end
+    req = local_requiredCalls(prompt);
+    if ~isempty(req)
+        user = [user char(10) char(10) 'THE PROBLEM REQUIRES (use exactly these, with this problem''s own variables):' ...
+            char(10) '- ' strjoin(req, [char(10) '- ']) char(10) ...
+            'Compute true/exact values with the required MATLAB function; never type them from memory.']; %#ok<AGROW>
+    end
     user = [user char(10) char(10) 'Write the complete MATLAB script.']; %#ok<AGROW>
     msgs{end+1} = local_msg('user', user); %#ok<AGROW>
     total = sum(cellfun(@(m) numel(m.content), msgs));
@@ -885,6 +1037,7 @@ function s = local_systemPrompt(env)
 L = {
     'You are ru, an expert MATLAB engineer and numerical-methods tutor for the BUET course CE206 (textbook: Chapra, Applied Numerical Methods with MATLAB).'
     ['Write ONE complete MATLAB script that solves the PROBLEM exactly as asked and runs without errors in MATLAB ' env.release '.']
+    'The solved examples show the style and the ru_lib calls; adapt them to the new PROBLEM with its own numbers, guesses and names.'
     'Reply with exactly one ```matlab code block and nothing else.'
     ''
     'READING THE PROBLEM'
@@ -904,7 +1057,7 @@ L = {
     ''
     'OUTPUT RULES'
     '8. First print the equations/data you are using, e.g. fprintf(''f(x) = x^3 - 10x^2 + 5\n''), so the reader can confirm the problem was read correctly.'
-    '9. Print every requested result with fprintf with a label and units, e.g. fprintf(''Root = %.6f m\n'', xr). Print an iteration table when iterations are asked for.'
+    '9. Print every requested result with fprintf with a label and units that fit THIS problem (never copy names or units from the examples), e.g. fprintf(''Root = %.6f\n'', xr). Print an iteration table when iterations are asked for. When asked to compare methods, print one comparison table (method, result, iterations, error).'
     '10. Check the answer independently and print the check: f(root) near 0, norm(A*x - b), a built-in method (fzero, integral, ode45, eig, polyfit) or the analytical solution.'
     '11. Plot only when a graph/plot/figure/diagram is requested: figure; plot(...); grid on; xlabel(...); ylabel(...); title(...); legend(...).'
     ['12. ' env.toolboxLine]
@@ -1104,7 +1257,11 @@ kb = local_kb(root);
 env = local_env();
 conv = local_convLoad(root);
 follow = local_isFollowUp(question, conv);
-ctx = local_retrieve(kb, question);
+if follow
+    ctx = local_retrieve(kb, [conv{end}.prompt char(10) question]);
+else
+    ctx = local_retrieve(kb, question);
+end
 [host, model, caps, maxCtx] = local_engine(root, false, 'text');
 if isempty(model)
     return
@@ -2621,7 +2778,12 @@ idx = b;
 end
 
 function v = local_numbers(txt)
-tok = regexp(txt, '\d+\.?\d*|\.\d+', 'match');
+% Data values in a text: thousands separators removed; digits inside words (interp1, m3, ode45)
+% and problem/figure/table labels are ignored.
+txt = regexprep(txt, '(?<=\d),(?=\d{3}(?!\d))', '');
+txt = regexprep(txt, ['(?i)\<(problem|prob\.?|example|ex\.?|exercise|fig\.?|figure|table|eq\.?|' ...
+    'equation|section|sec\.?|chapter|ch\.?|page|slide|question|q\.?|set)[\s\-]*[A-Z]?\d+(\.\d+)*[a-z]?'], ' ');
+tok = regexp(txt, '(?<![A-Za-z_\d.])(\d+\.?\d*|\.\d+)', 'match');
 v = unique(str2double(tok));
 v = v(~isnan(v));
 v = v(:)';
