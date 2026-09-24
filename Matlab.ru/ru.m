@@ -21,6 +21,8 @@ function varargout = ru(varargin)
 %   ru model [name|auto]  choose the text model;  ru vision [name|auto]  image model
 %   ru gpu [auto|on|off]  graphics card use (auto: dedicated cards yes, integrated no)
 %   ru verbose [on|off]   off (default): only the code and MATLAB's output are shown
+%   ru prep               free memory: close your browsers, chat and music programs
+%                         (runs ru_prep.bat; asks nothing, keeps the ru engine)
 %   ru list | ru test | ru help
 %
 %   ru adapts to each PC by itself: it measures the free memory, uses the strongest
@@ -113,6 +115,11 @@ switch cmd
     case 'list'
         if alone
             local_list(root);
+            return
+        end
+    case {'prep', 'free', 'clean'}
+        if alone
+            local_prep(root);
             return
         end
     case 'last'
@@ -453,6 +460,21 @@ sys = numel(msgs{1}.content);
 total = sum(cellfun(@(m) numel(m.content), msgs));
 fprintf('[ru] prompt: %d characters (~%d tokens), of which the fixed system part is %d characters\n', ...
     total, round(total / 3.2), sys);
+end
+
+function local_prep(root)
+% Close the user's own heavy programs (browsers, chat, music, game launchers) to free memory.
+bat = fullfile(root, 'ru_prep.bat');
+if ~ispc || exist(bat, 'file') ~= 2
+    fprintf(2, '[ru] ru prep needs Windows and %s\n', bat);
+    return
+end
+fprintf('[ru] Closing your browsers, chat and music programs to free memory ...\n');
+[st, out] = system(['"' bat '" /y /keep']);
+fprintf('%s\n', strtrim(out));
+if st ~= 0 && isempty(strtrim(out))
+    fprintf(2, '[ru] This PC did not let ru_prep.bat run (lab policy).\n');
+end
 end
 
 function local_prepare(root)
