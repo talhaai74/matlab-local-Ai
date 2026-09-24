@@ -1,0 +1,14 @@
+TOPIC: bvp
+PREFIXES: ode_shooting, ode_fdbvp
+KEYWORDS: boundary value problem, boundary-value, bvp, boundary condition, boundary conditions, shooting method, shooting, finite difference method, finite-difference method, fd method, heated rod, rod, heat transfer, convection, radiation, deflection of the beam, elastic curve, simply supported beam, uniformly loaded beam, cantilever, groundwater, aquifer, water table, electrostatic, poisson, dirichlet, neumann, derivative boundary condition, insulated, bvp4c, delta x, nodes, interior nodes
+METHODS: shooting method, shooting | finite difference method, finite-difference method, finite difference approach, finite-difference approach
+CHEATSHEET:
+- Shooting: write y'' = f(x,y,y') as dYdx = @(x,Y) [Y(2); f(x,Y(1),Y(2))]; guess the unknown slope z0 = y'(a),
+  integrate with ode45 over [a b], residual r(z0) = Y(end,1) - yb; solve r(z0) = 0 with fzero (linear ODE: two shots and
+  linear interpolation). ru_lib: [x,y,z] = ode_shooting(dYdx,[a b],ya,yb,z1,z2).
+- Finite differences (linear ODE y'' + p(x)y' + q(x)y = r(x), Dirichlet y(a), y(b)): [x,y] = ode_fdbvp(p,q,r,[a b],ya,yb,n)
+  with n interior nodes (dx = (b-a)/(n+1)). Heated rod T'' + h'(Ta - T) = 0 -> p = 0, q = -h', r = -h'*Ta.
+  Build the tridiagonal system by hand when asked: (-T(i-1) + (2 + h'*dx^2)*T(i) - T(i+1)) = h'*dx^2*Ta.
+- Neumann (derivative) BC at a node: add a ghost node, T(-1) = T(1) - 2*dx*dTdx, and keep that node as an unknown.
+- Beam: EI*y'' = M(x); simply supported y(0) = y(L) = 0. Use consistent units (N, m, Pa; kip, in, ksi).
+- Compare with the analytical solution on the same plot and print the maximum difference.

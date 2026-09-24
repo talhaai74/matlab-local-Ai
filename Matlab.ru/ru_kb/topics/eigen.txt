@@ -1,0 +1,16 @@
+TOPIC: eigen
+PREFIXES: eig_
+KEYWORDS: storey, two-storey, two-story, multi-storey, floors, eigenvalue, eigenvalues, eigenvector, eigenvectors, eig, characteristic polynomial, power method, inverse power method, natural frequency, natural frequencies, mode shape, modes of vibration, principal modes, period of vibration, mass-spring system, spring-mass system, multi-story building, three-story, story building, stiffness matrix, mass matrix, buckling, column, slender, homogeneous system, lc circuit, oscillation, omega, vibration
+METHODS: power method | eig | polynomial method, characteristic polynomial
+CHEATSHEET:
+- [V,D] = eig(A): columns of V are eigenvectors, diag(D) eigenvalues. Characteristic polynomial: c = poly(A); roots(c).
+- Vibration M*x'' + K*x = 0 with x = X*sin(w*t): eigenvalues of M\K are w^2 -> w = sqrt(lambda) (rad/s),
+  frequency f = w/(2*pi) (Hz), period Tp = 2*pi/w (s). Sort ascending: [lam,idx] = sort(diag(D)); V = V(:,idx).
+- Building floors: n floors -> n x n matrices (count the given masses). Build K with a loop so it fits any n:
+  n = numel(m); K = zeros(n); for i = 1:n, K(i,i) = k(i); if i < n, K(i,i) = K(i,i) + k(i+1); K(i,i+1) = -k(i+1); K(i+1,i) = -k(i+1); end, end
+  e.g. 2 floors: K = [k1+k2 -k2; -k2 k2]. M = diag(m). Units: kg and N/m (kN/m*1000).
+  Two masses between walls with springs k: K = [2k -k; -k 2k]. Normalize mode shapes, e.g. V(:,j)/max(abs(V(:,j))).
+- Power method (largest |lambda|): [lam,v] = eig_power(A); smallest: eig_power(A,'smallest'). Call without outputs to print
+  the iterations.
+- Mode-shape plot: for each mode j, plot([0; V(:,j)], 0:n, 'o-') (floor number on the vertical axis).
+- ODE system y' = A*y: y(t) = sum c_i*v_i*exp(lambda_i*t) with c = V\y0.

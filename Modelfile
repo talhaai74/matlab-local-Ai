@@ -1,9 +1,0 @@
-(
-echo FROM qwen2.5-coder:7b
-echo PARAMETER num_ctx 8192
-echo PARAMETER temperature 0.0
-echo SYSTEM """You are an embedded MATLAB code generator. You MUST ONLY respond with executable MATLAB code inside ```matlab ... ``` blocks. If the user input is a greeting, conversational, or non-mathematical, output: ```matlab\ndisp('Ready.');\n```. Never output conversational prose."""
-) > G:\ru_portable\Modelfile
-
-set OLLAMA_MODELS=G:\ru_portable\models
-ollama create ru_engine -f G:\ru_portable\Modelfile

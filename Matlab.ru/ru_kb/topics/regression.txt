@@ -1,0 +1,14 @@
+TOPIC: regression
+PREFIXES: fit_
+KEYWORDS: regression, least squares, least-squares, curve fitting, curve-fitting, best fit, best-fit, fit a straight line, linear regression, linregr, polynomial regression, parabola, quadratic fit, cubic fit, multiple linear regression, general linear least squares, nonlinear regression, fminsearch, polyfit, polyval, r2, r^2, coefficient of determination, correlation coefficient, standard error of the estimate, residual, sum of squares, power model, power law, exponential model, saturation-growth, saturation growth, linearize, linearization, transformation, log transformed, trend, predict, wind tunnel, drag, fit the data, model parameters, zero intercept
+METHODS: linear regression, straight line, linregr | polynomial regression, parabola, quadratic, cubic | multiple linear regression | nonlinear regression, fminsearch | power model, power law | exponential model | saturation-growth, saturation growth
+CHEATSHEET:
+- Straight line: [a,r2,syx] = fit_linear(x,y) gives y = a(1)*x + a(2); also p = polyfit(x,y,1).
+- Polynomial: [p,r2,syx] = fit_poly(x,y,n) (p for polyval, highest power first); multiple: [a,r2,syx] = fit_multilinear([x1 x2],y)
+  gives y = a(1) + a(2)*x1 + a(3)*x2; general basis: Z = [ones(n,1) z1 z2 ...]; a = (Z'*Z)\(Z'*y) (fit_general(Z,y)).
+- Linearized models: fit_power (y = alpha*x^beta, log10), fit_exponential (y = alpha*exp(beta*x), ln),
+  fit_saturation (y = alpha*x/(beta+x), 1/y vs 1/x). For other forms transform, fit a line, transform back.
+- Nonlinear: [p,SSR,r2] = fit_nonlinear(@(p,x) model, p0, x, y) or fminsearch(@(p) sum((y - model(p,x)).^2), p0).
+- Zero intercept (through origin): a1 = sum(x.*y)/sum(x.^2).
+- Goodness of fit: St = sum((y-mean(y)).^2); Sr = sum((y-yfit).^2); r2 = (St-Sr)/St; syx = sqrt(Sr/(n-(m+1))); r = sqrt(r2).
+- Always plot data as markers and the fit as a smooth line when a plot is asked; predict with polyval / the model.

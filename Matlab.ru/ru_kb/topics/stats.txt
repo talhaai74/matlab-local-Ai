@@ -1,0 +1,15 @@
+TOPIC: stats
+PREFIXES: stat_
+KEYWORDS: statistics, statistical, mean, median, mode, range, standard deviation, variance, coefficient of variation, quartile, percentile, iqr, interquartile, confidence interval, histogram, hist, frequency distribution, normal distribution, gaussian, probability, z-score, t-test, t test, ttest, ttest2, hypothesis, hypothesis testing, null hypothesis, p-value, p value, significance, significant, two-sample, one-sample, fitlm, regression model, correlation, plotmatrix, descriptive statistics, pm2.5, pm10, rainfall, data_stat, readtable, monte carlo, random, randn, rand
+METHODS: t-test, ttest | two-sample t-test, ttest2 | fitlm, regression model | histogram, hist | monte carlo
+CHEATSHEET:
+- Base MATLAB: mean, median, mode, std (n-1), var, min, max, range = max-min, sort, cumsum, hist/histogram, corrcoef.
+  mean(A) works column-wise; mean(A,2) row-wise. Coefficient of variation = std/mean*100 (%).
+- Without the Statistics toolbox use ru_lib: stat_describe(x), stat_quantile(x,[0.25 0.5 0.75]) (quartiles like
+  quantile/prctile), stat_ci_mean(x,0.95), [h,p,ci,st] = stat_ttest(x,mu0,alpha,tail), [h,p,ci,st] = stat_ttest2(x1,x2),
+  stat_normcdf/stat_norminv/stat_normpdf, stat_tcdf/stat_tinv, s = stat_regress(X,y,intercept) (like fitlm).
+- With the toolbox: quantile/prctile, iqr, ttest, ttest2, tinv, normcdf, fitlm(T,'y~x1+x2','Intercept',false).
+- 95% CI of the mean: mean +/- tinv(0.975,n-1)*std/sqrt(n). IQR = Q3 - Q1.
+- h = 1 means reject H0 at the alpha level (p < alpha). One-sided test "mean greater than mu0": tail 'right'.
+- Data files: T = readtable('data_stat.xlsx'); x = T.PM25; the file must be in the current folder.
+- Histogram with a range and width: edges = 0.8:0.2:2.4; histogram(x, edges) or counts = histc(x, edges).

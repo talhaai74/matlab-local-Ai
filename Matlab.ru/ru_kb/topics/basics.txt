@@ -1,0 +1,15 @@
+TOPIC: basics
+PREFIXES: util_
+KEYWORDS: vector, matrix, array, colon, linspace, logspace, element-wise, elementwise, transpose, inverse, determinant, identity matrix, zeros, ones, diag, sparse, plot, subplot, hold on, legend, xlabel, ylabel, title, grid, semilogx, semilogy, loglog, mesh, surf, contour, meshgrid, polar, bar, stairs, quiver, fill, for loop, while loop, if else, logical, relational, find, vectorize, vectorization, function file, m-file, script, fprintf, disp, format, csvread, csvwrite, xlsread, xlswrite, readtable, writetable, complex number, fibonacci, sum of squares, singularity function, macaulay, heaviside, formatted, table of values
+METHODS: meshgrid, mesh, surf | subplot | for loop | while loop | find
+CHEATSHEET:
+- Vectors: a:h:b (step), linspace(a,b,n) (n points incl. ends), x(:) column, x.' transpose, numel/length/size.
+- Element-wise math on arrays needs .* ./ .^ ; matrix product A*B needs inner sizes to match; A\b solves A*x=b.
+- Indexing: A(i,j), A(2:3,1:2), A(:,1), A(end,:), x(k) with k = find(x > 0.2) ; logical masks: x(x>0).
+- Plots: figure; plot(x,y,'b-',x,z,'r--'); grid on; xlabel('x'); ylabel('y'); title('...'); legend('y','z'); hold on / hold off.
+  subplot(m,n,p); semilogy/semilogx/loglog; surfaces: [X,Y] = meshgrid(x,y); Z = f(X,Y) with .^ .* ; mesh/surf/contour(X,Y,Z).
+- fprintf('%6.2f %10.4f\n', [x; y]) prints a table column-wise (rows of [x;y] become lines).
+- Function files: function [out1,out2] = name(in1,in2) ... end ; in a script put local functions at the END.
+- Singularity (Macaulay) function <x-a>^n = util_sing(x,a,n) (0 for x<=a); unit step: n = 0.
+- Files: csvread/readmatrix for numbers, readtable('file.xlsx') for tables (T.ColumnName), writematrix/writetable to save.
+- Complex numbers: 3+4i, abs, angle, real, imag, conj. Degrees: sind/cosd/tand, deg2rad/rad2deg.

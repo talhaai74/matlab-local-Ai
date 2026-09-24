@@ -1,0 +1,16 @@
+TOPIC: fourier
+PREFIXES: fourier_
+KEYWORDS: fourier, fourier series, fourier analysis, fourier transform, discrete fourier transform, dft, fft, fast fourier transform, ifft, power spectrum, spectrum, frequency, frequencies, nyquist, sampling frequency, sampling rate, harmonics, sinusoid, sinusoidal, amplitude, phase, period, periodic, square wave, sawtooth, triangular wave, half-wave rectifier, sunspot, cycle length, time domain, frequency domain, least-squares fit of a sinusoid, mean value, angular frequency
+METHODS: fft, dft, discrete fourier transform | power spectrum | fourier series | sinusoid fit, least-squares sinusoid
+CHEATSHEET:
+- Sampling: n points with spacing dt -> t = (0:n-1)*dt, fs = 1/dt, Nyquist = fs/2, lowest detectable frequency = 1/(n*dt),
+  frequency resolution df = fs/n.
+- DFT: Y = fft(y)/n (CE206 slides divide by n); Y(1) is the mean. Frequencies of Y(2:n/2+1) are (1:n/2)*fs/n.
+  Slide plot: Y(1) = []; f = linspace(fmin, nyquist, n/2); stem(f, real(Y(1:n/2))) and stem(f, imag(Y(1:n/2))).
+  Power spectrum: P = abs(Y(1:n/2)).^2 (after removing Y(1)); stem(f, P).
+  ru_lib: F = fourier_dft(y) (= fft(y)); [f,P,A] = fourier_spectrum(y,dt) one-sided amplitude/power.
+- Fourier series of a T-periodic function: [a0,a,b] = fourier_series(f,T,N); partial sum
+  f_N(t) = a0 + sum(a(k)*cos(k*w0*t) + b(k)*sin(k*w0*t)), w0 = 2*pi/T. Square wave: sum of 4A0/((2n-1)pi)*sin(2pi(2n-1)t/T).
+- Sinusoid fit y = A0 + A1*cos(w0 t) + B1*sin(w0 t): [A0,A1,B1,C1,theta] = fourier_sinefit(t,y,f0) (f0 = 1/T);
+  amplitude C1 = sqrt(A1^2+B1^2), phase theta = atan2(-B1,A1), time of maximum t = -theta/w0 (mod T).
+- Remove a trend before fft: y - polyval(polyfit(t,y,1),t). Cycle length = 1/(frequency of the largest power peak).

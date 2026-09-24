@@ -1,0 +1,17 @@
+TOPIC: differentiation
+PREFIXES: diff_
+KEYWORDS: derivative, differentiate, differentiation, numerical differentiation, finite difference, finite-difference, forward difference, backward difference, centered difference, central difference, o(h), o(h^2), o(h^4), richardson, extrapolation, gradient, diff, slope, velocity and acceleration, rate of change, dt/dt, dv/dt, dx/dt, du/dy, dT/dx, flux, fourier's law, fick's law, newton's viscosity, shear stress, inflection point, second derivative, unequally spaced, unequal spacing, newton's law of cooling, cooling, thermocline, faraday, inductor, flow rate from volume, surface area from volume
+METHODS: forward difference | backward difference | centered difference, central difference | richardson | gradient
+CHEATSHEET:
+- Function f: [d1,d2] = diff_fd(f, x, h, 'forward'|'backward'|'centered', order) (order 1/2 for forward/backward,
+  2/4 for centered) gives f'(x) and f''(x). Richardson: D = diff_richardson(f, x, h1, h2) (= 4/3*D(h/2) - 1/3*D(h)).
+  Formulas: centered O(h^2) f' = (f(x+h)-f(x-h))/(2h); forward O(h^2) f' = (-f(x+2h)+4f(x+h)-3f(x))/(2h).
+- Data (x,y), equal or unequal spacing: [dy, d2y] = diff_data(x,y) (O(h^2) everywhere, one-sided at the ends).
+  MATLAB built-ins: gradient(y,h) (equal spacing h, or gradient(y,x)), diff(y)./diff(x) (slopes between points,
+  one fewer value; midpoints (x(1:end-1)+x(2:end))/2).
+- Second derivative from first: apply diff_data/gradient twice, or use d2y from diff_data.
+- Noisy data: fit a smooth curve (polyfit/spline) first, then differentiate the fit (polyder, fnder is a toolbox; use polyder).
+- Inflection point: where d2y/dx2 changes sign (interpolate the zero); maximum slope where d2y/dx2 = 0.
+- Flux: J = -k*dT/dx; shear stress tau = mu*du/dy at the wall; flow rate Q = dV/dt; area As = -dV/dz for volume
+  measured from the surface down (use abs to report the area).
+- True percent relative error vs the analytical derivative: et = abs((true - approx)/true)*100.
