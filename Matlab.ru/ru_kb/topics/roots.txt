@@ -1,0 +1,18 @@
+TOPIC: roots
+PREFIXES: root_, opt_
+KEYWORDS: root, roots, zero of, zeros of, solve the equation, nonlinear equation, transcendental, bisection, bisect, half-interval, false position, regula falsi, newton-raphson, newton raphson, newton's method, newtraph, secant, modified secant, fixed-point, fixed point, iteration method, fzero, polynomial roots, characteristic equation, bracket, bracketing, initial guess, open method, stopping criterion, approximate relative error, true relative error, critical depth, saturation concentration, dissolved oxygen, spherical tank, depth of water, maximum deflection, point of maximum, colebrook, friction factor, manning, fsolve, system of nonlinear equations, golden section, maximum of the function, minimum of the function, fminbnd, optimum
+METHODS: bisection, bisect, half-interval | false position, regula falsi, regula-falsi | newton-raphson, newton raphson, newtraph, newton's method | secant | modified secant | fixed-point, fixed point, simple iteration | golden section, golden-section | incremental search
+CHEATSHEET:
+- ru_lib calls (es = stopping error in PERCENT, maxit = max iterations; es = 0 with maxit = n runs exactly n iterations):
+  [xr,fx,ea,iter] = root_bisection(f, xl, xu, es, maxit)      [xr,fx,ea,iter] = root_falseposition(f, xl, xu, es, maxit)
+  [xr,fx,ea,iter] = root_newton(f, df, x0, es, maxit)          [xr,fx,ea,iter] = root_secant(f, x0, x1, es, maxit)
+  [xr,fx,ea,iter] = root_modsecant(f, x0, delta, es, maxit)    [xr,fx,ea,iter] = root_fixedpoint(g, x0, es, maxit)
+  r = root_findall(f, xmin, xmax)  (all real roots in a range)  [x,Fx] = root_newtonsys(F, x0, J)  (systems)
+  Each also returns hist (one row per iteration) as 5th output; call with NO outputs to print the iteration table.
+- "Use three iterations" means maxit = 3 (es = 0 or a tiny es). "Error below 1%" means es = 1.
+- Built-ins to confirm: fzero(f, [xl xu]) (needs a sign change) or fzero(f, x0); roots([a_n ... a_0]) for polynomials;
+  fminbnd(f, a, b) for a minimum; a maximum of f = minimum of -f. Plot f first to choose brackets.
+- Bisection iterations for an absolute error Ead: n = ceil(log2((xu - xl)/Ead)).
+- Newton-Raphson needs f'(x): write it analytically (df = @(x) ...).
+- Maximum deflection/optimum: solve dy/dx = 0 (write dy/dx analytically), then evaluate y there.
+- Given y = f(x) and a target value Y, solve f(x) - Y = 0 (e.g. tank volume = 30 m^3).

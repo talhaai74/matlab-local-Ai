@@ -1,0 +1,10 @@
+# Runtime state that ru writes on the pendrive (conversation memory, logs, settings, scratch scripts)
+Matlab.ru/brain/*
+!Matlab.ru/brain/backup/
+# Model weights and the portable Ollama program: far too large for git, keep them on the pendrive
+Matlab.ru/model/blobs/*
+Matlab.ru/models/
+Matlab.ru/ollama/
+# MATLAB autosave files
+*.asv
+*.m~

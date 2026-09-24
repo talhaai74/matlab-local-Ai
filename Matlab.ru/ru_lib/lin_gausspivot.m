@@ -1,11 +1,12 @@
-function x = lin_gausspivot(A, b, show)
+function [x, D] = lin_gausspivot(A, b, show)
 %LIN_GAUSSPIVOT  Gauss elimination with partial pivoting to solve A*x = b.
-%   x = lin_gausspivot(A, b, show)
+%   [x, D] = lin_gausspivot(A, b, show)
 %   A      square coefficient matrix (n by n)
 %   b      right-hand side vector (n by 1, a row vector is accepted too)
 %   show   true prints the augmented matrix after every row swap and every
 %          elimination step (default false)
 %   x      solution column vector (n by 1)
+%   D      determinant of A = (-1)^(row swaps) * product of the pivots
 %   At step k, swaps in the row with the largest abs(A(i,k)) as pivot, so a
 %   zero or small pivot on the diagonal does not stall or blow up the method.
 %   Call without output to print the solution.
@@ -24,6 +25,7 @@ if numel(b) ~= n
 end
 nb = n+1;
 Aug = [A b];
+nswap = 0;
 for k = 1:n-1
     [piv, p] = max(abs(Aug(k:n,k)));
     p = p+k-1;
@@ -33,6 +35,7 @@ for k = 1:n-1
     end
     if p ~= k
         Aug([k p],:) = Aug([p k],:);
+        nswap = nswap + 1;
         if show
             fprintf('Swap row %d and row %d:\n', k, p);
             disp(Aug);
@@ -51,6 +54,7 @@ if Aug(n,n) == 0
     error('ru_lib:lin_gausspivot:singular', ...
         'lin_gausspivot: matrix is singular (zero pivot at row %d).', n);
 end
+D = (-1)^nswap * prod(diag(Aug(:,1:n)));
 x = zeros(n,1);
 x(n) = Aug(n,nb)/Aug(n,n);
 for i = n-1:-1:1
@@ -61,5 +65,6 @@ if nargout == 0
     for i = 1:n
         fprintf('  x(%d) = %.6g\n', i, x(i));
     end
+    fprintf('  determinant = %.6g\n', D);
 end
 end

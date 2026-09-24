@@ -1,0 +1,15 @@
+TOPIC: linear
+PREFIXES: lin_
+KEYWORDS: system of linear equations, simultaneous equations, linear algebraic equations, linear system, matrix form, coefficient matrix, gauss elimination, gaussian elimination, naive gauss, partial pivoting, pivoting, gauss-jordan, lu decomposition, lu factorization, cholesky, tridiagonal, thomas algorithm, gauss-seidel, jacobi, cramer, determinant, inverse, condition number, cond, norm, ill-conditioned, truss, bar forces, member forces, reactions, statically determinate, sliding body, inclined plane, tension in the cable, springs in series, spring, circuit, kirchhoff, resistor, current, voltage, mass balance, reactors, pits, sand, gravel, augmented matrix, back substitution, forward elimination
+METHODS: gauss elimination, gaussian elimination, naive gauss | partial pivoting, pivoting | gauss-jordan, gauss jordan | lu decomposition, lu factorization, lu | cholesky | tridiagonal, thomas | gauss-seidel, gauss seidel | jacobi | cramer
+CHEATSHEET:
+- Write the equations as A*x = b: one row per equation, one column per unknown (put 0 for a missing unknown), b column.
+- Solve: x = A\b (best). Methods on request: lin_gaussnaive(A,b); [x,D] = lin_gausspivot(A,b,true) prints the matrix
+  after each step and D = determinant; lin_gaussjordan(A,b); lin_cramer(A,b); [L,U,P] = lin_lu(A); x = lin_lusolve(L,U,P,b);
+  built-in LU: [L,U] = lu(A); d = L\b; x = U\d ; tridiagonal: x = lin_tridiag(e,f,g,r) (e sub, f main, g super diagonal);
+  iterative: [x,ea,iter] = lin_gaussseidel(A,b,es,maxit,lambda); lin_jacobi(A,b,es,maxit).
+- LU is reused for several right-hand sides b (e.g. other load cases): factor once, solve for each b.
+- Truss: at each joint sum Fx = 0 and sum Fy = 0; unknown bar forces assumed in TENSION (positive = tension,
+  negative = compression); reactions are unknowns too. Use cosd/sind for angles in degrees. Report T/C in a table.
+- Check: norm(A*x - b) ~ 0. Condition number cond(A) (2-norm), cond(A,1), cond(A,inf); det(A); inv(A).
+- Print results with names, e.g. fprintf('F1 = %10.4f N (%s)\n', x(1), tc).

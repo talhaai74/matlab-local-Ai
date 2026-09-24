@@ -23,6 +23,15 @@ if fl*fu > 0
         'root_falseposition: f(xl) and f(xu) must have opposite signs (f(%.6g)=%.6g, f(%.6g)=%.6g).', xl, fl, xu, fu);
 end
 iter = 0; ea = 100; xr = xl; hist = zeros(0,6);
+if fl == 0 || fu == 0
+    % An end of the bracket is already an exact root.
+    if fl == 0, root = xl; else, root = xu; end
+    fx = 0; ea = 0;
+    if nargout == 0
+        fprintf('root = %.8g is an end of the bracket (f = 0 there)\n', root);
+    end
+    return
+end
 while true
     xrold = xr;
     xr = xu - fu*(xl - xu)/(fl - fu);
@@ -33,7 +42,13 @@ while true
     else
         ea = 100;
     end
+    if fr == 0
+        ea = 0;
+    end
     hist(iter,:) = [iter xl xu xr fr ea];
+    if fr == 0
+        break
+    end
     if fl*fr < 0
         xu = xr; fu = fr;
     else
