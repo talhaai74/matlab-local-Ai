@@ -1,0 +1,91 @@
+function ru(varargin)
+    userPrompt = strjoin(varargin, ' ');
+    usbDir = 'G:\ru_portable';
+
+    % 1. Auto-Index all .m files in USB subdirectories
+    mFiles = dir(fullfile(usbDir, '**', '*.m'));
+    fileLibrary = "Available Local Functions in Path:\n";
+    for k = 1:length(mFiles)
+        fileName = mFiles(k).name;
+        if ~strcmp(fileName, 'ru.m')
+            fileLibrary = fileLibrary + sprintf("- %s (Location: %s)\n", fileName, mFiles(k).folder);
+        end
+    end
+
+    % 2. Read Persistent Memory file
+    memoryFile = fullfile(usbDir, 'memory.txt');
+    memoryContext = "";
+    if exist(memoryFile, 'file') == 2
+        memoryContext = sprintf("User Memory & Rules:\n%s\n\n", fileread(memoryFile));
+    end
+
+    % 3. Check for specific .m file references in prompt
+    tokens = regexp(userPrompt, '[\w\-\.]+\.m', 'match');
+    fileContentContext = "";
+    for i = 1:length(tokens)
+        targetFile = tokens{i};
+        for k = 1:length(mFiles)
+            if strcmp(mFiles(k).name, targetFile)
+                fullPath = fullfile(mFiles(k).folder, mFiles(k).name);
+                fileContentContext = sprintf("%s\n[Content of %s]:\n%s\n", ...
+                    fileContentContext, targetFile, fileread(fullPath));
+                break;
+            end
+        end
+    end
+
+    basePrompt = sprintf("%s%s%s\nUser Task: %s", ...
+        memoryContext, fileLibrary, fileContentContext, userPrompt);
+
+    url = 'http://localhost:11434/api/generate';
+    options = weboptions('MediaType', 'application/json', 'Timeout', 60);
+
+    maxRetries = 3;
+    attempt = 1;
+    success = false;
+    currentPrompt = basePrompt;
+
+    while attempt <= maxRetries && ~success
+        body = struct(...
+            'model', 'ru_engine', ...
+            'prompt', currentPrompt, ...
+            'stream', false ...
+        );
+
+        try
+            response = webwrite(url, body, options);
+            rawCode = strtrim(response.response);
+
+            cleanCode = regexprep(rawCode, '^```matlab\s*|^```\s*|\s*```$', '');
+            cleanCode = regexprep(cleanCode, '(?m)^\s*%.*\n?', '');
+            cleanCode = regexprep(cleanCode, '%.*', '');
+            cleanCode = strtrim(cleanCode);
+
+            if isempty(cleanCode)
+                error('Engine output contained no executable code (only comments or prose).');
+            end
+
+            if attempt > 1
+                fprintf('[ru Self-Healing Attempt %d]:\n%s\n\n', attempt, cleanCode);
+            else
+                fprintf('\n[ru Executing]:\n%s\n\n', cleanCode);
+            end
+
+            evalin('base', cleanCode);
+            success = true;
+
+        catch ME
+            fprintf(2, '[ru Error Detected]: %s\n', ME.message);
+            attempt = attempt + 1;
+
+            if attempt <= maxRetries
+                fprintf('[ru Auto-Correction]: Feeding error back to engine...\n');
+                currentPrompt = sprintf(...
+                    "%s\n\nYour previous code generated this MATLAB error:\n%s\n\nFIXING INSTRUCTIONS:\n- Use explicit multiplication operators (e.g. 2*pi*12.5*t instead of 2pi(12.5)t).\n- Do NOT include any comments (%%) or explanation text.\n- Return ONLY valid executable MATLAB code.", ...
+                    basePrompt, ME.message);
+            else
+                fprintf(2, '[ru Failed]: Maximum auto-correction retries reached.\n');
+            end
+        end
+    end
+end
