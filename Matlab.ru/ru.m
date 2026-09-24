@@ -493,6 +493,10 @@ if think
     numPredict = 12000;
 end
 [baseMsgs, numCtx] = local_buildSolveMessages(root, prompt, kb, env, ctx, conv, follow, opts, maxCtx, numPredict);
+ctxNoEx = ctx;
+ctxNoEx.examples = zeros(1, 0);
+baseNoEx = local_buildSolveMessages(root, prompt, kb, env, ctxNoEx, conv, follow, opts, maxCtx, numPredict);
+lastError = '';
 if ~isempty(ctx.topics)
     fprintf('[ru] Topic: %s', strjoin(ctx.topics, ', '));
     if ~isempty(ctx.examples)
@@ -563,6 +567,19 @@ for attempt = 1:maxAttempts
         else
             feedback = local_feedback(info, kb, code, cut, attempt == maxAttempts - 1);
             local_log(root, sprintf('ATTEMPT %d CODE:\n%s\nERROR: %s', attempt, code, info.message));
+            if strcmp(info.message, lastError) && attempt < maxAttempts
+                % Stuck on the same error (usually a structure copied from an example):
+                % start again without the examples and with the lesson as a requirement.
+                requirements = [requirements char(10) '- An earlier attempt failed with "' local_firstLine(info.message) ...
+                    '" at: ' info.lineText '. Do not copy sizes or structures from other problems; use exactly ' ...
+                    'the data of THIS problem (count its values).']; %#ok<AGROW>
+                msgs = local_withRequirements(baseNoEx, requirements);
+                prevCode = code;
+                lastError = info.message;
+                fprintf('[ru] Same error again: starting over with a clean prompt...\n');
+                continue
+            end
+            lastError = info.message;
         end
     else
         fprintf(2, '[ru] Rejected the generated code: %s\n', local_firstLine(problem));
@@ -747,6 +764,19 @@ if ~isempty(regexp(m, 'Matrix dimensions must agree|Arrays have incompatible siz
 end
 if ~isempty(regexp(m, 'Index exceeds|Index in position|out of bound', 'once'))
     h = [h sprintf('- An index is larger than the array. Check loop limits and preallocate arrays with zeros(n,1).\n')];
+    lim = regexp(m, '(?:must not exceed|out of bound;? (?:value )?|bound )(\d+)', 'tokens', 'once');
+    if ~isempty(lim) && ~isempty(info.lineText)
+        N = str2double(lim{1});
+        used = regexp(info.lineText, '([A-Za-z]\w*)\((\d+)\)', 'tokens');
+        for j = 1:numel(used)
+            if str2double(used{j}{2}) > N
+                h = [h sprintf(['- %s has only %d element(s) but the code uses %s(%s): this problem has %d values, ' ...
+                    'so every matrix and loop must be built for size %d (do not copy a larger example).\n'], ...
+                    used{j}{1}, N, used{j}{1}, used{j}{2}, N, N)]; %#ok<AGROW>
+                break
+            end
+        end
+    end
 end
 if ~isempty(regexp(m, 'must be positive integers|must be real positive integers|Subscript indices', 'once'))
     h = [h sprintf(['- MATLAB indices start at 1 and must be whole numbers: never write y(0) or y(t) with a ' ...
@@ -838,35 +868,35 @@ for k = 1:numel(funcs)
     end
 end
 methods = {
-    'bisection|bisect|half-interval', 'root_bisection|\\(\\s*xl\\s*\\+\\s*xu\\s*\\)\\s*/\\s*2|bisect', 'the bisection method', '[xr, fx, ea, iter, tab] = root_bisection(f, xl, xu, es, maxit)'
+    'bisection|bisect|half-interval', 'root_bisection|\(\s*xl\s*\+\s*xu\s*\)\s*/\s*2|bisect', 'the bisection method', '[xr, fx, ea, iter, tab] = root_bisection(f, xl, xu, es, maxit)'
     'false position|regula[ -]?falsi', 'root_falseposition|false position|regula|falsi', 'the false-position (regula falsi) method', '[xr, fx, ea, iter, tab] = root_falseposition(f, xl, xu, es, maxit)'
     'newton[- ]raphson|newton''s method|newtraph', 'root_newton|newton', 'the Newton-Raphson method', '[xr, fx, ea, iter, tab] = root_newton(f, df, x0, es, maxit)'
     '(?<!modified )secant', 'root_secant|root_modsecant|secant', 'the secant method', '[xr, fx, ea, iter, tab] = root_secant(f, x0, x1, es, maxit)'
     'fixed[- ]point|simple iteration', 'root_fixedpoint|fixed', 'fixed-point iteration', '[xr, res, ea, iter, tab] = root_fixedpoint(g, x0, es, maxit)'
     'golden[- ]section', 'opt_golden|golden', 'golden-section search', 'xopt = opt_golden(f, xl, xu, es)  (minimum; use -f for a maximum)'
-    'euler''?s? method|\\<euler\\>', 'ode_euler|euler', 'Euler''s method', '[t, y] = ode_euler(dydt, [t0 tf], y0, h)'
+    'euler''?s? method|\<euler\>', 'ode_euler|euler', 'Euler''s method', '[t, y] = ode_euler(dydt, [t0 tf], y0, h)'
     'heun', 'ode_heun|heun', 'Heun''s method', '[t, y] = ode_heun(dydt, [t0 tf], y0, h)'
     'midpoint method', 'ode_midpoint|midpoint', 'the midpoint method', '[t, y] = ode_midpoint(dydt, [t0 tf], y0, h)'
     'ralston', 'ode_ralston|ralston', 'Ralston''s method', '[t, y] = ode_ralston(dydt, [t0 tf], y0, h)'
-    'runge[- ]kutta|\\<rk4\\>|fourth[- ]order rk', 'ode_rk4|rk4|k4', 'the 4th-order Runge-Kutta method', '[t, y] = ode_rk4(dydt, [t0 tf], y0, h)'
-    'simpson', 'integ_simp|simpson|/\\s*3|3\\s*\\*\\s*h\\s*/\\s*8', 'Simpson''s rule', 'I = integ_simp13(f, a, b, n)  (n even) or integ_simpdata(x, y) for data'
+    'runge[- ]kutta|\<rk4\>|fourth[- ]order rk', 'ode_rk4|rk4|k4', 'the 4th-order Runge-Kutta method', '[t, y] = ode_rk4(dydt, [t0 tf], y0, h)'
+    'simpson', 'integ_simp|simpson|/\s*3|3\s*\*\s*h\s*/\s*8', 'Simpson''s rule', 'I = integ_simp13(f, a, b, n)  (n even) or integ_simpdata(x, y) for data'
     'trapezoid', 'trapz|integ_trap|trapezoid', 'the trapezoidal rule', 'I = integ_trap(f, a, b, n) or trapz(x, y) for data'
     'romberg', 'integ_romberg|romberg', 'Romberg integration', '[I, ea, iter, R] = integ_romberg(f, a, b, es)'
     'gauss(ian)?[- ](legendre|quadrature)|two-point gauss|three-point gauss', 'integ_gauss|gauss', 'Gauss quadrature', 'I = integ_gauss(f, a, b, npts)'
     'boole', 'boole', 'Boole''s rule', 'I = integ_newtoncotes(f, a, b, ''boole'')'
-    'richardson', 'diff_richardson|richardson|4\\s*/\\s*3', 'Richardson extrapolation', 'D = diff_richardson(f, x, h1, h2)'
-    '\\<lu\\>|lu decomposition|lu factori', '(?<![\\w.])lu\\s*\\(|lin_lu', 'LU factorization', '[L, U] = lu(A); d = L\\b; x = U\\d;'
-    'cholesky', 'chol|lin_cholesky', 'Cholesky factorization', 'U = chol(A); x = U\\(U''\\b);'
+    'richardson', 'diff_richardson|richardson|4\s*/\s*3', 'Richardson extrapolation', 'D = diff_richardson(f, x, h1, h2)'
+    '\<lu\>|lu decomposition|lu factori', '(?<![\w.])lu\s*\(|lin_lu', 'LU factorization', '[L, U] = lu(A); d = L\b; x = U\d;'
+    'cholesky', 'chol|lin_cholesky', 'Cholesky factorization', 'U = chol(A); x = U\(U''\b);'
     'gauss[- ]seidel', 'lin_gaussseidel|seidel', 'the Gauss-Seidel method', '[x, ea, iter] = lin_gaussseidel(A, b, es, maxit)'
     'jacobi', 'lin_jacobi|jacobi', 'the Jacobi method', '[x, ea, iter] = lin_jacobi(A, b, es, maxit)'
-    'cramer', 'lin_cramer|cramer|det\\s*\\(', 'Cramer''s rule', 'x = lin_cramer(A, b)'
+    'cramer', 'lin_cramer|cramer|det\s*\(', 'Cramer''s rule', 'x = lin_cramer(A, b)'
     'partial pivoting|pivoting', 'lin_gausspivot|pivot', 'Gauss elimination with partial pivoting', '[x, D] = lin_gausspivot(A, b, true)'
     'tridiagonal|thomas', 'lin_tridiag|tridiag|thomas', 'the tridiagonal (Thomas) algorithm', 'x = lin_tridiag(e, f, g, r)'
     'lagrange', 'interp_lagrange|lagrange', 'the Lagrange polynomial', 'yi = interp_lagrange(x, y, xi)'
     'divided difference|newton''s interpolating|newton interpolating', 'interp_newton|interp_divdiff|divided|polyfit', 'Newton''s divided differences', '[yi, b] = interp_newton(x, y, xi)'
     'power method', 'eig_power|power', 'the power method', '[lambda, v] = eig_power(A)'
     'shooting', 'ode_shooting|shoot|fzero|res', 'the shooting method', 'solve the IVP with ode45 for a guessed slope and adjust it with fzero on the end residual'
-    'finite[- ]difference (method|approach)', 'ode_fdbvp|\\\\|tridiag|finite', 'the finite-difference method', 'build the tridiagonal system of the node equations and solve it with \\'
+    'finite[- ]difference (method|approach)', 'ode_fdbvp|\\|tridiag|finite', 'the finite-difference method', 'build the tridiagonal system of the node equations and solve it with \'
     };
 for k = 1:size(methods, 1)
     if ~isempty(regexp(p, methods{k, 1}, 'once')) && isempty(regexp(cc, methods{k, 2}, 'once'))
@@ -1069,7 +1099,7 @@ end
 function s = local_askSystemPrompt(env)
 L = {
     'You are ru, a precise MATLAB and numerical-methods tutor for the BUET course CE206 (textbook: Chapra, Applied Numerical Methods with MATLAB).'
-    'Answer the question correctly and clearly in plain English: short paragraphs or bullet points, formulas in plain text (x^2, sqrt(), exp()).'
+    'Answer the question correctly and clearly in plain English: short paragraphs or bullet points, formulas in plain text (x^2, sqrt(), exp()). Never use LaTeX; the answer is shown in the MATLAB Command Window.'
     'Rules:'
     '- Never invent MATLAB functions, options or results. If you are not sure, say so.'
     '- Do not guess numbers. If the question needs a calculation, say that it should be solved with ru and show the MATLAB code in a ```matlab block.'
@@ -1299,7 +1329,7 @@ if ~isempty(err)
     local_engineHelp();
     return
 end
-reply = strtrim(reply);
+reply = local_plainText(strtrim(reply));
 fprintf('\n%s\n', reply);
 bad = local_unknownFunctionsInText(reply);
 if ~isempty(bad)
@@ -1313,6 +1343,24 @@ if ~isempty(opts.turnPrompt)
 end
 local_convAdd(root, 'ask', turnQ, '', reply, true);
 local_log(root, sprintf('ANSWER:\n%s', reply));
+end
+
+function t = local_plainText(t)
+% LaTeX/Markdown -> readable Command Window text.
+t = regexprep(t, '\\\[|\\\]|\\\(|\\\)|\$\$', '');
+t = regexprep(t, '\\frac\{([^{}]*)\}\{([^{}]*)\}', '($1)/($2)');
+t = regexprep(t, '\\(left|right)\s*', '');
+t = regexprep(t, '\\(cdot|times)', '*');
+t = regexprep(t, '\\(approx)', '~');
+t = regexprep(t, '\\(le|leq)\>', '<=');
+t = regexprep(t, '\\(ge|geq)\>', '>=');
+t = regexprep(t, '\\(sqrt)\{([^{}]*)\}', 'sqrt($2)');
+t = regexprep(t, '\\(alpha|beta|gamma|delta|Delta|epsilon|theta|lambda|mu|pi|sigma|tau|phi|omega|rho)\>', '$1');
+t = regexprep(t, '_\{([^{}]*)\}', '_$1');
+t = regexprep(t, '\^\{([^{}]*)\}', '^($1)');
+t = regexprep(t, '\*\*([^*\n]+)\*\*', '$1');
+t = regexprep(t, '(?m)^#{1,6}\s*', '');
+t = regexprep(t, '\n{3,}', sprintf('\n\n'));
 end
 
 function local_explainLast(root)
