@@ -1,0 +1,144 @@
+function ru(varargin)
+    % 0. Guard against empty calls
+    if nargin == 0 || isempty(strtrim(strjoin(varargin, ' ')))
+        return;
+    end
+
+    userPrompt = strtrim(strjoin(varargin, ' '));
+    usbDir = 'G:\ru_portable';
+
+    % 1. Auto-Index all .m files in USB subdirectories
+    mFiles = dir(fullfile(usbDir, '**', '*.m'));
+    fileLibrary = "Available Local Functions in Path:" + newline;
+    for k = 1:length(mFiles)
+        fileName = mFiles(k).name;
+        if ~strcmp(fileName, 'ru.m') && ~strcmp(fileName, 'startup.m')
+            fileLibrary = fileLibrary + sprintf("- %s (Location: %s)\n", fileName, mFiles(k).folder);
+        end
+    end
+
+    % 2. Read Persistent Memory file
+    memoryFile = fullfile(usbDir, 'memory.txt');
+    memoryContext = "";
+    if exist(memoryFile, 'file') == 2
+        memoryContext = "User Memory & Rules:" + newline + string(fileread(memoryFile)) + newline + newline;
+    end
+
+    % 3. Check for specific .m file references in prompt
+    tokens = regexp(userPrompt, '[\w\-\.]+\.m', 'match');
+    fileContentContext = "";
+    for i = 1:length(tokens)
+        targetFile = tokens{i};
+        for k = 1:length(mFiles)
+            if strcmp(mFiles(k).name, targetFile)
+                fullPath = fullfile(mFiles(k).folder, mFiles(k).name);
+                fileContentContext = fileContentContext + newline + "[Content of " + targetFile + "]:" + newline + string(fileread(fullPath)) + newline;
+                break;
+            end
+        end
+    end
+
+    % 4. System Instruction built via robust scalar string concatenation
+    systemContent = ...
+        "You are ru, an automated MATLAB code compiler." + newline + ...
+        "CRITICAL DIRECTIVE: Output ONLY valid executable MATLAB code inside ```matlab ... ``` blocks." + newline + ...
+        "DO NOT output explanations, conversational intro text, or isolated words." + newline + ...
+        "Always convert natural math syntax into executable MATLAB code (e.g., x^2+2x+1 -> fplot(@(x) x.^2 + 2*x + 1, [-10, 10]); grid on;)." + newline + newline + ...
+        "FEW-SHOT EXAMPLES:" + newline + ...
+        "User: give me the graph of x^2+2x+1" + newline + ...
+        "Assistant:" + newline + ...
+        "```matlab" + newline + ...
+        "fplot(@(x) x.^2 + 2*x + 1, [-10, 10]); grid on; title('y = x^2 + 2*x + 1'); xlabel('x'); ylabel('y');" + newline + ...
+        "```" + newline + newline + ...
+        "User: calculate sum of first 100 natural numbers" + newline + ...
+        "Assistant:" + newline + ...
+        "```matlab" + newline + ...
+        "n = 100; total = n*(n+1)/2; fprintf('Sum: %d\n', total);" + newline + ...
+        "```" + newline + newline + ...
+        memoryContext + fileLibrary + fileContentContext;
+
+    url = 'http://localhost:11434/api/chat';
+    options = weboptions('MediaType', 'application/json', 'Timeout', 60, 'CharacterEncoding', 'UTF-8');
+
+    currentUserPrompt = userPrompt;
+    maxRetries = 3;
+    attempt = 1;
+    success = false;
+
+    while attempt <= maxRetries && ~success
+        body = struct(...
+            'model', 'ru_engine', ...
+            'messages', [ ...
+                struct('role', 'system', 'content', char(systemContent)), ...
+                struct('role', 'user', 'content', currentUserPrompt) ...
+            ], ...
+            'stream', false, ...
+            'options', struct('temperature', 0.0, 'num_ctx', 4096) ...
+        );
+
+        try
+            response = webwrite(url, body, options);
+
+            if isfield(response, 'message') && isfield(response.message, 'content')
+                rawResponse = strtrim(response.message.content);
+            else
+                error('Ollama API returned an empty payload.');
+            end
+
+            % Extract code inside markdown blocks
+            blockTokens = regexp(rawResponse, '(?s)```(?:matlab)?\s*\n?(.*?)\n?\s*```', 'tokens');
+            if ~isempty(blockTokens)
+                cleanCode = strtrim(blockTokens{1}{1});
+            else
+                % Strip conversational lead-in lines if markdown backticks are omitted
+                lines = splitlines(rawResponse);
+                validLines = lines(~startsWith(strtrim(lines), {'Here', 'Sure', 'To ', 'This', 'Note', 'You', 'Below', 'Certainly'}));
+                cleanCode = strtrim(strjoin(validLines, sprintf('\n')));
+            end
+
+            % Clean lingering backticks and comments
+            cleanCode = strrep(cleanCode, '`', '');
+            cleanCode = regexprep(cleanCode, '(?m)^\s*%.*\n?', '');
+            cleanCode = strtrim(cleanCode);
+
+            % Sanitize implicit multiplication (e.g., 2x -> 2*x)
+            cleanCode = regexprep(cleanCode, '(\d)([a-zA-Z])', '$1*$2');
+
+            % Reserved keyword and recursion safety check
+            blockedKeywords = {'startup', 'ru', 'clear functions', 'clear all', 'clc'};
+            if ismember(lower(cleanCode), blockedKeywords) || startsWith(cleanCode, 'ru(') || startsWith(cleanCode, 'ru ')
+                error('INVALID_KEYWORD');
+            end
+
+            if isempty(cleanCode)
+                error('EMPTY_CODE_BLOCK');
+            end
+
+            if attempt > 1
+                fprintf('[ru Self-Healing Attempt %d]:\n%s\n\n', attempt, cleanCode);
+            else
+                fprintf('\n[ru Executing]:\n%s\n\n', cleanCode);
+            end
+
+            evalin('base', cleanCode);
+            success = true;
+
+        catch ME
+            attempt = attempt + 1;
+
+            if attempt <= maxRetries
+                if strcmp(ME.message, 'INVALID_KEYWORD') || strcmp(ME.message, 'EMPTY_CODE_BLOCK')
+                    fprintf(2, '[ru Warning]: Engine returned invalid or blank output. Re-anchoring prompt...\n');
+                    currentUserPrompt = sprintf("TASK: %s\n\nREQUIREMENT: Output executable MATLAB code inside ```matlab ... ``` blocks ONLY.", userPrompt);
+                else
+                    fprintf(2, '[ru Error Detected]: %s\n', ME.message);
+                    fprintf('[ru Auto-Correction]: Feeding runtime error back to engine...\n');
+                    currentUserPrompt = sprintf("Original Task: %s\n\nFailed Code Attempt:\n%s\n\nMATLAB Runtime Error:\n%s\n\nFix the error and return ONLY valid executable MATLAB code.", ...
+                        userPrompt, cleanCode, ME.message);
+                end
+            else
+                fprintf(2, '[ru Failed]: Maximum retries reached.\n');
+            end
+        end
+    end
+end

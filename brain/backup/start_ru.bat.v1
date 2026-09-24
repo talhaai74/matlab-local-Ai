@@ -1,0 +1,4 @@
+@echo off
+set OLLAMA_MODELS=%~dp0models
+echo Starting local ru engine from USB (G:)...
+ollama serve

@@ -1,0 +1,69 @@
+function ru(varargin)
+    userPrompt = strjoin(varargin, ' ');
+    usbDir = 'G:\ru_portable';
+
+    % 1. Auto-Index all .m files in USB directory (e.g. Roots of equation)
+    mFiles = dir(fullfile(usbDir, '**', '*.m'));
+    fileLibrary = "Available Local Functions in Path:\n";
+    for k = 1:length(mFiles)
+        fileName = mFiles(k).name;
+        % Exclude the handler itself
+        if ~strcmp(fileName, 'ru.m')
+            fileLibrary = fileLibrary + sprintf("- %s (Location: %s)\n", fileName, mFiles(k).folder);
+        end
+    end
+
+    % 2. Read Persistent Memory file if it exists
+    memoryFile = fullfile(usbDir, 'memory.txt');
+    memoryContext = "";
+    if exist(memoryFile, 'file') == 2
+        memoryContext = sprintf("User Memory & Rules:\n%s\n\n", fileread(memoryFile));
+    end
+
+    % 3. Check if user is referencing a specific file in the prompt
+    tokens = regexp(userPrompt, '[\w\-\.]+\.m', 'match');
+    fileContentContext = "";
+    for i = 1:length(tokens)
+        targetFile = tokens{i};
+        found = false;
+        for k = 1:length(mFiles)
+            if strcmp(mFiles(k).name, targetFile)
+                fullPath = fullfile(mFiles(k).folder, mFiles(k).name);
+                fileContentContext = sprintf("%s\n[Content of %s]:\n%s\n", ...
+                    fileContentContext, targetFile, fileread(fullPath));
+                found = true;
+                break;
+            end
+        end
+    end
+
+    % Assemble final system payload
+    fullPrompt = sprintf("%s%s%s\nUser Task: %s", ...
+        memoryContext, fileLibrary, fileContentContext, userPrompt);
+
+    url = 'http://localhost:11434/api/generate';
+    options = weboptions('MediaType', 'application/json', 'Timeout', 60);
+
+    body = struct(...
+        'model', 'ru_engine', ...
+        'prompt', fullPrompt, ...
+        'stream', false ...
+    );
+
+    try
+        response = webwrite(url, body, options);
+        rawCode = strtrim(response.response);
+
+        % Clean string formatting leftovers
+        cleanCode = regexprep(rawCode, '^```matlab\s*|^```\s*|\s*```$', '');
+        cleanCode = strtrim(cleanCode);
+
+        fprintf('\n[ru Executing]:\n%s\n\n', cleanCode);
+
+        % Execute inside MATLAB base workspace
+        evalin('base', cleanCode);
+
+    catch ME
+        fprintf(2, 'Execution Error: %s\n', ME.message);
+    end
+end
