@@ -6,8 +6,9 @@ rem  ru_prep.bat - run on a lab PC BEFORE starting MATLAB and ru.
 rem  It frees memory by closing YOUR OWN heavy programs: web browsers, chat,
 rem  music/video players, game launchers and a leftover ru engine.
 rem  It never touches Windows, MATLAB, antivirus, lab or exam software, or other
-rem  users' programs, and it changes no settings. Office files are not closed
-rem  (unsaved work). It asks before closing anything.
+rem  users' programs, and it changes no settings. Word, Excel, PowerPoint and
+rem  other document programs are only asked to close, so they can offer to save.
+rem  It asks before closing anything.
 rem
 rem    double-click           shows what is running and asks
 rem    ru_prep.bat /y         closes without asking (used by  ru prep  in MATLAB)
@@ -32,10 +33,27 @@ set APPS=chrome.exe msedge.exe firefox.exe opera.exe brave.exe vivaldi.exe iexpl
  Spotify.exe vlc.exe wmplayer.exe Music.UI.exe Video.UI.exe ^
  steam.exe steamwebhelper.exe EpicGamesLauncher.exe Battle.net.exe
 if "%KEEP%"=="0" set APPS=%APPS% ollama.exe
+rem Document programs: closed normally only (never forced), so unsaved work can be saved.
+set DOCS=WINWORD.EXE EXCEL.EXE POWERPNT.EXE ONENOTE.EXE OUTLOOK.EXE MSACCESS.EXE MSPUB.EXE ^
+ AcroRd32.exe Acrobat.exe FoxitPDFReader.exe SumatraPDF.exe notepad++.exe
 
 set "FOUND="
 for %%P in (%APPS%) do (
     tasklist /NH /FI "IMAGENAME eq %%P" /FI "USERNAME eq %ME%" 2>nul | find /i "%%P" >nul && set "FOUND=!FOUND! %%P"
+)
+set "FOUNDDOCS="
+for %%P in (%DOCS%) do (
+    tasklist /NH /FI "IMAGENAME eq %%P" /FI "USERNAME eq %ME%" 2>nul | find /i "%%P" >nul && set "FOUNDDOCS=!FOUNDDOCS! %%P"
+)
+if defined FOUNDDOCS (
+    echo  Your document programs:%FOUNDDOCS%
+    echo  They will be asked to close; answer their Save questions.
+    set "DOCSOK=1"
+    if "%AUTO%"=="0" (
+        choice /C YN /M "  Close them now"
+        if errorlevel 2 set "DOCSOK=0"
+    )
+    if "!DOCSOK!"=="1" for %%P in (%FOUNDDOCS%) do taskkill /IM %%P /FI "USERNAME eq %ME%" >nul 2>&1
 )
 if not defined FOUND (
     echo  None of your heavy programs are running.

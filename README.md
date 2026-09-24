@@ -105,9 +105,11 @@ ru looks at each PC by itself and remembers what it learned in
 **Before you start on a lab PC:** double-click `Matlab.ru\ru_prep.bat` (or type
 `ru prep` in MATLAB). It shows the free memory, lists your own heavy programs
 (browsers, Teams/Discord/Telegram/WhatsApp, Spotify/VLC, Steam, a leftover ru
-engine), asks, closes them, and shows the biggest programs still running. It never
-touches Windows, MATLAB, antivirus, lab or exam software, other users' programs or
-Office files, and it changes no settings.
+engine), asks, closes them, and shows the biggest programs still running. Word,
+Excel, PowerPoint, OneNote, Outlook and PDF readers are asked to close normally
+(never forced), so they can offer to save your work. It never touches Windows,
+MATLAB, antivirus, lab or exam software or other users' programs, and it changes
+no settings.
 
 **Lab PCs**
 
