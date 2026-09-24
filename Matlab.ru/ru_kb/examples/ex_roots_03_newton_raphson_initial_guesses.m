@@ -10,7 +10,6 @@
 % CODE:
 f  = @(x) exp(-0.5*x).*(4 - x) - 2;
 df = @(x) -exp(-0.5*x) - 0.5*exp(-0.5*x).*(4 - x);   % f'(x)
-fprintf('f(x) = exp(-0.5x)(4 - x) - 2,  f''(x) = -exp(-0.5x) - 0.5exp(-0.5x)(4 - x)\n');
 guesses = [2 6 8];
 for k = 1:numel(guesses)
     x0 = guesses(k);

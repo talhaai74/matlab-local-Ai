@@ -12,7 +12,6 @@
 % CODE:
 f = @(x) x.^3 - 10*x.^2 + 5;
 xl = 0.6; xu = 0.8; es = 0.0001; maxit = 50;
-fprintf('f(x) = x^3 - 10x^2 + 5, bracket [%g, %g], es = %g %%\n', xl, xu, es);
 
 [root, fx, ea, iter, tab] = root_bisection(f, xl, xu, es, maxit);
 fprintf('%5s %10s %10s %10s %12s %12s\n', 'iter', 'xl', 'xu', 'xr', 'f(xr)', 'ea (%)');

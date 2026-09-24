@@ -5,8 +5,10 @@ function ok = ru_selftest(what, pattern)
 %   ru_selftest examples      only the solved examples (ru_kb/examples/*.m)
 %   ru_selftest examples roots   only examples whose file name contains "roots"
 %   ok = ru_selftest(...)     true when everything passed
-%   Each example is run in its own workspace; its % CHECK: lines must all be
-%   true. Examples marked % SELFTEST: skip (they need data files) are skipped.
+%   Each example is run in its own workspace in the compact form ru shows and
+%   runs (no comments; plots and check prints only when its problem asks for
+%   them); its % CHECK: lines must all be true. Examples marked
+%   % SELFTEST: skip (they need data files) are skipped.
 %   No AI model is needed.
 if nargin < 1 || isempty(what)
     what = 'all';
@@ -65,7 +67,7 @@ if any(strcmpi(what, {'all', 'examples'}))
             continue
         end
         f = fullfile(root, 'ru_kb', 'examples', d(i).name);
-        [code, checks, skip] = ru_selftest_parse(f);
+        [code, checks, skip, problem] = ru_selftest_parse(f);
         if isempty(code)
             nFail = nFail + 1;
             failures{end+1} = sprintf('%s: no %% CODE: section', d(i).name); %#ok<AGROW>
@@ -76,6 +78,7 @@ if any(strcmpi(what, {'all', 'examples'}))
             fprintf('  SKIP %s\n', d(i).name);
             continue
         end
+        code = ru('--compact', code, problem);
         if isOctave
             code = ru_selftest_splitFunctions(code, tmp);
         end
@@ -94,9 +97,11 @@ if any(strcmpi(what, {'all', 'examples'}))
             failures{end+1} = sprintf('%s: %s', d(i).name, msg); %#ok<AGROW>
             fprintf('  FAIL %-60s %s\n', d(i).name, msg);
         end
-        newFigs = setdiff(findall(0, 'Type', 'figure'), figsBefore);
-        if ~isempty(newFigs)
-            delete(newFigs);
+        figs = findall(0, 'Type', 'figure');
+        for j = 1:numel(figs)
+            if ~any(arrayfun(@(h) h == figs(j), figsBefore))
+                delete(figs(j));
+            end
         end
     end
 end
@@ -111,18 +116,26 @@ if nargout == 0
 end
 end
 
-function [code, checks, skip] = ru_selftest_parse(f)
+function [code, checks, skip, problem] = ru_selftest_parse(f)
 code = '';
 checks = {};
 skip = false;
+problem = '';
+inProblem = false;
 txt = strrep(fileread(f), char(13), '');
 lines = regexp(txt, '\n', 'split');
 for k = 1:numel(lines)
-    tok = regexp(lines{k}, '^\s*%\s*(CHECK|SELFTEST|CODE)\s*:\s*(.*)$', 'tokens', 'once');
+    tok = regexp(lines{k}, '^\s*%\s*(TOPIC|TITLE|SOURCE|KEYWORDS|PROBLEM|CHECK|SELFTEST|CODE)\s*:\s*(.*)$', 'tokens', 'once');
     if isempty(tok)
+        if inProblem
+            problem = [problem ' ' regexprep(lines{k}, '^\s*%\s?', '')]; %#ok<AGROW>
+        end
         continue
     end
+    inProblem = strcmp(tok{1}, 'PROBLEM');
     switch tok{1}
+        case 'PROBLEM'
+            problem = tok{2};
         case 'CHECK'
             checks{end+1} = strtrim(tok{2}); %#ok<AGROW>
         case 'SELFTEST'

@@ -12,7 +12,6 @@
 f   = @(x) -2*x.^6 - 1.5*x.^4 + 10*x + 2;
 df  = @(x) -12*x.^5 - 6*x.^3 + 10;           % f'(x) = 0 at the maximum
 d2f = @(x) -60*x.^4 - 18*x.^2;               % f''(x) < 0 there
-fprintf('f(x) = -2x^6 - 1.5x^4 + 10x + 2, solve f''(x) = -12x^5 - 6x^3 + 10 = 0\n');
 [xmax, ~, ea, iter, tab] = root_newton(df, d2f, 1, 5, 50);
 fprintf('%5s %12s %12s %12s %10s\n', 'iter', 'x', 'f''(x)', 'f''''(x)', 'ea (%)');
 fprintf('%5d %12.6f %12.6f %12.6f %10.4f\n', tab');

@@ -25,6 +25,10 @@ end
 x = x0; iter = 0; ea = 100; hist = zeros(0,5);
 while true
     fxc = f(x);
+    if fxc == 0
+        ea = 0;                      % x is an exact root (also when f'(x) = 0 there: repeated root)
+        break
+    end
     dfx = df(x);
     if dfx == 0
         error('ru_lib:root_newton:zeroderiv', ...

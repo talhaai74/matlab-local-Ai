@@ -17,6 +17,5 @@ A = [m(1)  1  0;
      m(3)  0 -1];
 b = w(:);
 x = A\b;
-fprintf('Equations: 100a + T1 = %.3f,  50a - T1 + T2 = %.3f,  25a - T2 = %.3f\n', b);
 fprintf('Acceleration a = %.4f m/s^2\nTension T1 = %.4f N\nTension T2 = %.4f N\n', x);
 fprintf('Check: residual = %.2e\n', norm(A*x - b));

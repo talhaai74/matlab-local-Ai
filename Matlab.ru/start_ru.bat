@@ -2,15 +2,19 @@
 setlocal
 rem ============================================================================
 rem  ru engine: starts the Ollama AI engine that serves the models on this pendrive.
-rem  You normally do NOT need this: typing  ru  in MATLAB starts the engine itself.
+rem  You normally do NOT need this: typing  ru  in MATLAB starts the engine itself,
+rem  and that is better: ru then also adapts the graphics settings to the PC
+rem  (integrated graphics off, processor-only when a graphics driver fails).
 rem  Keep this window open while you use ru; close it to free the memory.
 rem ============================================================================
 set "RU_DIR=%~dp0"
 set "OLLAMA_MODELS=%RU_DIR%model"
 set "OLLAMA_HOST=127.0.0.1:11435"
-rem never delete model files on the pendrive, keep one model in memory for 30 min
+rem never delete model files on the pendrive, keep one model in memory for 60 min,
+rem allow 30 min to load a big model from a slow pendrive
 set "OLLAMA_NOPRUNE=1"
-set "OLLAMA_KEEP_ALIVE=30m"
+set "OLLAMA_KEEP_ALIVE=60m"
+set "OLLAMA_LOAD_TIMEOUT=30m"
 set "OLLAMA_MAX_LOADED_MODELS=1"
 set "OLLAMA_NUM_PARALLEL=1"
 

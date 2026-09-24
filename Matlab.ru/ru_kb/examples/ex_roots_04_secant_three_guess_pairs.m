@@ -11,7 +11,6 @@
 % CODE:
 f = @(x) sin(x) + cos(1 + x.^2) - 1;
 pairs = [1.0 3.0; 1.5 2.5; 1.5 2.25];
-fprintf('f(x) = sin(x) + cos(1 + x^2) - 1 (radians), 4 secant iterations\n');
 res = zeros(1, 3);
 for k = 1:3
     [r, fr, ea, iter, tab] = root_secant(f, pairs(k,1), pairs(k,2), 0, 4);
