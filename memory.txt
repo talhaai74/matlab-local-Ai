@@ -1,0 +1,2 @@
+Rule: Convert informal mathematical notation (e.g. 2pi(12.5)t) into explicit MATLAB syntax (2*pi*12.5*t).
+Rule: For N equispaced time points with spacing dt, always define time as t = (0:N-1)*dt.
