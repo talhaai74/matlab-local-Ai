@@ -1,0 +1,9 @@
+function y = ddeflectedfunc(x)
+r=55;
+p=0;
+L = 6*r;
+w = 2.5;
+E = 50000+10000*p;
+I = 30000;
+c = w/(120*E*I*L);
+y = c*(-20*x.^3+6*2*L^2*x);
