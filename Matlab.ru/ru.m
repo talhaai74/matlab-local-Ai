@@ -26,9 +26,25 @@ function ru(varargin)
 %   ru remembers the conversation, so follow-ups work: "now use RK4 instead",
 %   "plot it", "change h to 0.1", "why is the error so large?".
 
+% The user's last error, captured before ru's own internal try/catch blocks can overwrite it.
+userLastErr = '';
+try
+    userLastErr = lasterr; %#ok<LERR>
+catch
+end
+restoreErr = onCleanup(@() local_restoreLastErr(userLastErr));
+local_userError(userLastErr);
 root = fileparts(mfilename('fullpath'));
 local_setup(root);
 args = local_args(varargin);
+if numel(args) == 1
+    % ru('remember my ID is ...') behaves like the command form  ru remember my ID is ...
+    tok = regexp(args{1}, '^\s*(\S+)\s+(.+)$', 'tokens', 'once');
+    if ~isempty(tok) && any(strcmpi(tok{1}, {'remember', 'ask', 'explain', 'fix', 'again', 'retry', 'think', ...
+            'ai', 'img', 'image', 'shot', 'screenshot', 'history', 'model', 'vision', 'host', 'save', '--retrieve'}))
+        args = {tok{1}, tok{2}};
+    end
+end
 opts = local_opts();
 if isempty(args)
     prompt = local_askProblem();
@@ -167,6 +183,25 @@ end
 % =====================================================================
 % Setup, input and small commands
 % =====================================================================
+
+function e = local_userError(set)
+% Remembers the user's last error message for "ru fix".
+persistent E
+if nargin == 1
+    E = set;
+end
+if isempty(E)
+    E = '';
+end
+e = E;
+end
+
+function local_restoreLastErr(msg)
+try
+    lasterr(msg); %#ok<LERR>
+catch
+end
+end
 
 function o = local_opts()
 o = struct('forceAI', false, 'forceSolve', false, 'think', false, 'again', false, ...
@@ -861,7 +896,7 @@ funcs = {'fzero', 'fminsearch', 'fminbnd', 'roots', 'integral', 'integral2', 'qu
     'semilogy', 'semilogx', 'loglog', 'expm', 'besselj', 'erf', 'cumsum', 'linsolve', 'plotmatrix'};
 for k = 1:numel(funcs)
     fn = funcs{k};
-    asked = ~isempty(regexp(p, ['(using|use|with|by|via|apply|employ|matlab''?s?|built-in)\s+(the\s+)?(matlab\s+)?(built-in\s+)?' ...
+    asked = ~isempty(regexp(p, ['(using|use|via|apply|employ|matlab''?s?|built-in)\s+(the\s+)?(matlab\s+)?(built-in\s+)?' ...
         fn '\>|\<' fn '\s*(\(|function|command)'], 'once'));
     if asked && isempty(regexp(c, ['(?<![\w.])' fn '\s*\('], 'once'))
         absent{end+1} = local_callTemplate(fn); %#ok<AGROW>
@@ -874,13 +909,13 @@ methods = {
     '(?<!modified )secant', 'root_secant|root_modsecant|secant', 'the secant method', '[xr, fx, ea, iter, tab] = root_secant(f, x0, x1, es, maxit)'
     'fixed[- ]point|simple iteration', 'root_fixedpoint|fixed', 'fixed-point iteration', '[xr, res, ea, iter, tab] = root_fixedpoint(g, x0, es, maxit)'
     'golden[- ]section', 'opt_golden|golden', 'golden-section search', 'xopt = opt_golden(f, xl, xu, es)  (minimum; use -f for a maximum)'
-    'euler''?s? method|\<euler\>', 'ode_euler|euler', 'Euler''s method', '[t, y] = ode_euler(dydt, [t0 tf], y0, h)'
+    'euler''?s? method|(using|use|apply|employ)\s+(the\s+)?euler\>|forward euler|explicit euler', 'ode_euler|euler', 'Euler''s method', '[t, y] = ode_euler(dydt, [t0 tf], y0, h)'
     'heun', 'ode_heun|heun', 'Heun''s method', '[t, y] = ode_heun(dydt, [t0 tf], y0, h)'
     'midpoint method', 'ode_midpoint|midpoint', 'the midpoint method', '[t, y] = ode_midpoint(dydt, [t0 tf], y0, h)'
     'ralston', 'ode_ralston|ralston', 'Ralston''s method', '[t, y] = ode_ralston(dydt, [t0 tf], y0, h)'
     'runge[- ]kutta|\<rk4\>|fourth[- ]order rk', 'ode_rk4|rk4|k4', 'the 4th-order Runge-Kutta method', '[t, y] = ode_rk4(dydt, [t0 tf], y0, h)'
     'simpson', 'integ_simp|simpson|/\s*3|3\s*\*\s*h\s*/\s*8', 'Simpson''s rule', 'I = integ_simp13(f, a, b, n)  (n even) or integ_simpdata(x, y) for data'
-    'trapezoid', 'trapz|integ_trap|trapezoid', 'the trapezoidal rule', 'I = integ_trap(f, a, b, n) or trapz(x, y) for data'
+    'trapezoid(al)? (rule|method)|\<trapz\>|trapezoidal integration|composite trapezoid', 'trapz|integ_trap|trapezoid', 'the trapezoidal rule', 'I = integ_trap(f, a, b, n) or trapz(x, y) for data'
     'romberg', 'integ_romberg|romberg', 'Romberg integration', '[I, ea, iter, R] = integ_romberg(f, a, b, es)'
     'gauss(ian)?[- ](legendre|quadrature)|two-point gauss|three-point gauss', 'integ_gauss|gauss', 'Gauss quadrature', 'I = integ_gauss(f, a, b, npts)'
     'boole', 'boole', 'Boole''s rule', 'I = integ_newtoncotes(f, a, b, ''boole'')'
@@ -888,10 +923,10 @@ methods = {
     '\<lu\>|lu decomposition|lu factori', '(?<![\w.])lu\s*\(|lin_lu', 'LU factorization', '[L, U] = lu(A); d = L\b; x = U\d;'
     'cholesky', 'chol|lin_cholesky', 'Cholesky factorization', 'U = chol(A); x = U\(U''\b);'
     'gauss[- ]seidel', 'lin_gaussseidel|seidel', 'the Gauss-Seidel method', '[x, ea, iter] = lin_gaussseidel(A, b, es, maxit)'
-    'jacobi', 'lin_jacobi|jacobi', 'the Jacobi method', '[x, ea, iter] = lin_jacobi(A, b, es, maxit)'
+    '\<jacobi\>(?! ?an)', 'lin_jacobi|jacobi', 'the Jacobi method', '[x, ea, iter] = lin_jacobi(A, b, es, maxit)'
     'cramer', 'lin_cramer|cramer|det\s*\(', 'Cramer''s rule', 'x = lin_cramer(A, b)'
     'partial pivoting|pivoting', 'lin_gausspivot|pivot', 'Gauss elimination with partial pivoting', '[x, D] = lin_gausspivot(A, b, true)'
-    'tridiagonal|thomas', 'lin_tridiag|tridiag|thomas', 'the tridiagonal (Thomas) algorithm', 'x = lin_tridiag(e, f, g, r)'
+    'thomas algorithm|tridiagonal (solver|algorithm)|tridiag\s*\(', 'lin_tridiag|tridiag|thomas', 'the tridiagonal (Thomas) algorithm', 'x = lin_tridiag(e, f, g, r)'
     'lagrange', 'interp_lagrange|lagrange', 'the Lagrange polynomial', 'yi = interp_lagrange(x, y, xi)'
     'divided difference|newton''s interpolating|newton interpolating', 'interp_newton|interp_divdiff|divided|polyfit', 'Newton''s divided differences', '[yi, b] = interp_newton(x, y, xi)'
     'power method', 'eig_power|power', 'the power method', '[lambda, v] = eig_power(A)'
@@ -1470,12 +1505,9 @@ if ~isempty(tail)
     end
 end
 if isempty(errText)
-    try
-        le = lasterr; %#ok<LERR>
-        if ~isempty(strtrim(le)) && isempty(strfind(le, 'ru_task_'))
-            errText = strtrim(le);
-        end
-    catch
+    le = local_userError();
+    if ~isempty(strtrim(le)) && isempty(strfind(le, 'ru_task_'))
+        errText = strtrim(le);
     end
 end
 if isempty(errText)
@@ -2028,14 +2060,14 @@ for k = 1:numel(lines)
     if isempty(regexp(s, '\S', 'once'))
         continue
     end
-    % Remove workspace-destroying or blocking statements.
-    s2 = regexprep(s, ['(?<![\w.])(clc|clear\s+all|clear\s+variables|clearvars[^;,]*|clear(?!\s*\w)|' ...
-        'close\s+all|close\(\s*''all''\s*\)|pause(\s*\([^)]*\))?|commandwindow|home)(?![\w(])\s*[;,]?'], '');
-    if isempty(regexp(s2, '\S', 'once'))
+    % Remove workspace-destroying or blocking statements (whole statements only).
+    rx = ['(^|[;,])\s*(?:clc|clear\s+all|clear\s+variables|clearvars[^;,]*|clear|close\s+all|' ...
+        'close\s*\(\s*''all''\s*\)|pause(?:\s*\([^)]*\))?|commandwindow|home)\s*(?=[;,]|$)'];
+    s2 = regexprep(s, rx, '$1');
+    if isempty(regexp(s2, '[^\s;,]', 'once'))
         keep(k) = false;
     elseif ~strcmp(s2, s)
-        idx = regexp(s, '\S', 'once');
-        lines{k} = [L(1:idx-1) strtrim(s2) L(numel(s)+1:end)];
+        lines{k} = regexprep(L, rx, '$1');
     end
     % "clear x y" keeps the listed variables' removal only; drop it (it can erase results).
     if ~isempty(regexp(s, '^\s*clear\s+\w', 'once'))
@@ -2043,10 +2075,31 @@ for k = 1:numel(lines)
     end
 end
 code = strjoin(lines(keep), char(10));
+% Octave logical operators outside strings: != -> ~=, !x -> ~x
+code = local_fixBang(code);
 % Implicit multiplication outside strings/comments: 2x -> 2*x, 2(x) -> 2*(x), )( -> )*(
 code = local_fixImplicitMult(code);
 code = regexprep(code, '\n{3,}', sprintf('\n\n'));
 code = strtrim(code);
+end
+
+function code = local_fixBang(code)
+if isempty(strfind(code, '!'))
+    return
+end
+s = local_stripCode(code);
+idx = find(s == '!');
+for k = numel(idx):-1:1
+    i = idx(k);
+    lineStart = find(s(1:i-1) == char(10), 1, 'last');
+    if isempty(lineStart)
+        lineStart = 0;
+    end
+    if isempty(strtrim(s(lineStart+1:i-1)))
+        continue                         % "!" at the start of a line is a shell escape (rejected later)
+    end
+    code(i) = '~';
+end
 end
 
 function code = local_fixImplicitMult(code)
@@ -2122,6 +2175,18 @@ else
             e = funStarts(i+1) - 1;
         else
             e = numel(lines);
+        end
+        % An indented body followed by unindented code: the unindented part is script code.
+        indented = ~cellfun(@isempty, regexp(stripped(f+1:e), '^\s+\S', 'once'));
+        if any(indented)
+            firstBody = f + find(~cellfun(@isempty, regexp(stripped(f+1:e), '\S', 'once')), 1);
+            for j = max(firstBody, f+1):e
+                if ~isempty(regexp(stripped{j}, '^\S', 'once')) && isempty(regexp(stripped{j}, '^(end|function)\>', 'once')) ...
+                        && (isempty(strtrim(stripped{j-1})) || ~isempty(regexp(stripped{j-1}, '^\s+\S', 'once')))
+                    e = j - 1;
+                    break
+                end
+            end
         end
         body = lines(f:e);
         bodyStripped = stripped(f:e);
@@ -2238,7 +2303,7 @@ if ~isempty(regexp(c, '(?<![\w.])ru\s*(\(|\s+\w)', 'once'))
     problem = 'Do not call ru from the script.';
     return
 end
-if ~isempty(regexp(c, '(?<![\w.])cd(\s+\S|\s*\()', 'once'))
+if ~isempty(regexp(c, '(?m)^\s*cd(\s+[^=\s]|\s*\()', 'once')) && ~any(strcmp(local_definedNames(c), 'cd'))
     problem = 'Do not change the current folder (no cd).';
     return
 end
@@ -2262,6 +2327,10 @@ function bad = local_unknownFunctions(code, kb)
 % Names called like functions that are neither defined in the script nor on the path.
 bad = {};
 c = local_stripCode(code);
+if ~isempty(regexp(code, '(?m)^\s*load\s*(\(\s*)?[''"]?[\w\\/:.-]*\.mat|(?m)^\s*load\s*(\(\s*)?[''"]?[\w\\/:.-]+[''"]?\s*\)?\s*;?\s*$', 'once')) ...
+        && isempty(regexp(code, '\.(dat|txt|csv)', 'once'))
+    return                                  % variables come from a .mat file: cannot know their names
+end
 known = local_definedNames(c);
 try
     W = evalin('base', 'who');
@@ -2514,6 +2583,8 @@ info = local_emptyInfo();
 info.output = out;
 msg = ME.message;
 msg = regexprep(msg, '<a href[^>]*>|</a>', '');
+msg = strrep(msg, file, 'your script');
+msg = strrep(msg, [name '.m'], 'your script');
 msg = strrep(msg, name, 'your script');
 info.message = msg;
 info.identifier = ME.identifier;

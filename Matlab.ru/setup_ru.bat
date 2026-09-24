@@ -15,7 +15,8 @@ cd /d "%RU_DIR%"
 
 echo.
 echo ru setup - folder: %RU_DIR%
-for /f "tokens=2 delims==" %%F in ('wmic logicaldisk where "DeviceID='%~d0'" get FileSystem /value 2^>nul ^| find "="') do set "FS=%%F"
+set "DRV=%~d0"
+for /f "usebackq delims=" %%F in (`powershell -NoProfile -Command "(Get-Volume -DriveLetter '!DRV:~0,1!').FileSystemType" 2^>nul`) do set "FS=%%F"
 if defined FS echo Drive %~d0 file system: !FS!
 if /i "!FS!"=="FAT32" (
     echo.
