@@ -170,10 +170,14 @@ that contain them type just `ru` and paste into the box.
 
 ## How ru avoids wrong answers
 
-1. **Verified solutions first.** `ru_kb/examples` holds 125 solved problems from
-   the CE206 slides, the final-quiz solution (set A) and the Chapra practice
-   problems. If you paste one of them (same numbers, same method), ru runs the
-   stored, checked solution instead of asking the AI.
+1. **Verified solutions first.** `ru_kb/examples` holds 156 solved problems from
+   the CE206 slides, the final-quiz solution (set A), the class solution sheets
+   (Integration, Differentiation, Curve fitting and Interpolation) and the Chapra
+   practice problems. If you paste one of them (same numbers, same method), ru runs
+   the stored, checked solution instead of asking the AI. Text copied from a PDF
+   works as it is (`10^3` pasted as `103`, `h^2` as `h2`), and a problem whose data
+   are only in its figure is recognised by its number: `5.11 A beam is loaded as
+   shown in Fig. P5.11 ...`. Change any number or the method and the AI solves it.
 2. **Grounding.** For other problems the AI receives the closest solved examples,
    a cheat sheet for the topic and the documentation of the tested solver library
    (`ru_lib`: bisection, false position, Newton, secant, Gauss/LU/Thomas,
@@ -223,7 +227,7 @@ Matlab.ru\            <- copy this folder to the pendrive
   memory.txt          your permanent rules
   ru_lib\             tested numerical-methods library (used by the AI)
   ru_kb\topics\       cheat sheets per chapter
-  ru_kb\examples\     125 verified solved examples
+  ru_kb\examples\     156 verified solved examples
   ru_tests\           library tests
   Endfiles\           your own course M-files (ru can use them: "use my bisection function")
   model\              AI models (Ollama format); weights are not in git

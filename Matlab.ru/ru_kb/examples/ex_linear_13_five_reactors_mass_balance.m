@@ -1,6 +1,6 @@
 % TOPIC: linear
 % TITLE: Steady-state concentrations in five reactors linked by pipes (mass balances)
-% SOURCE: Chapra Prob. 8.9 (Fig. P8.9)
+% SOURCE: Chapra Prob. 8.9 in an earlier edition (other flows than the 4th-edition Fig. P8.9)
 % KEYWORDS: reactors, mass balance, flow, concentration, pipes, steady state, mixing
 % PROBLEM:
 % Five reactors are linked by pipes. Flows (m^3/min): Q01 = 6 (c01 = 20), Q03 = 7 (c03 = 50),

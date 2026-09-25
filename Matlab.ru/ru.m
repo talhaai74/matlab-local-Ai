@@ -3576,35 +3576,106 @@ ctx.direct = local_directMatch(kb, prompt, sims);
 end
 
 function idx = local_directMatch(kb, prompt, sims)
+% A verified example runs as it is when it is one of the three closest examples, all of its numbers are
+% in the prompt (at most two other numbers there), and the prompt names the same methods. Of several,
+% the one that accounts for the most numbers of the prompt, then the closest.
 idx = 0;
 if isempty(sims)
     return
 end
-[s, b] = max(sims);
-if s < 0.45
-    return
+U = local_numbers(prompt);
+M = local_methodSet(kb, prompt);
+[ss, order] = sort(sims, 'descend');
+best = inf;
+for j = 1:min(3, numel(order))
+    if ss(j) < 0.45
+        break
+    end
+    ex = kb.examples(order(j));
+    if ex.skip || numel(ex.numbers) < 2 || ~all(ismember(ex.numbers, U)) || ~isequal(M, ex.methods)
+        continue
+    end
+    extra = numel(setdiff(U, ex.numbers));
+    if extra <= 2 && extra < best
+        best = extra;
+        idx = order(j);
+    end
 end
-ex = kb.examples(b);
-if ex.skip || numel(ex.numbers) < 2
+if idx == 0
+    idx = local_labelMatch(kb, prompt, sims);
+end
+end
+
+function idx = local_labelMatch(kb, prompt, sims)
+% A textbook problem cited by its number ("5.11 A beam is loaded as shown in Fig. P5.11 ..."), often
+% without its data (they are in the figure): the verified example of that problem runs directly when
+% it is close to the prompt, every number in the prompt is one of its numbers (no changed data), the
+% methods agree, and it is the only example of that number that fits.
+idx = 0;
+labels = local_probLabels(prompt);
+if isempty(labels)
     return
 end
 U = local_numbers(prompt);
-if ~all(ismember(ex.numbers, U))
+M = local_methodSet(kb, prompt);
+fit = zeros(1, 0);
+for k = 1:numel(kb.examples)
+    ex = kb.examples(k);
+    if ~ex.skip && sims(k) >= 0.45 && any(ismember(labels, ex.labels)) && all(ismember(U, ex.numbers)) ...
+            && isequal(M, ex.methods)
+        fit(end+1) = k; %#ok<AGROW>
+    end
+end
+if numel(fit) == 1
+    idx = fit;
+end
+end
+
+function L = local_probLabels(txt)
+% Textbook problem numbers cited in a prompt: a leading "6.22 You are ...", "Prob. 6.22",
+% "Problem 6.22", "Chapra 6.22" or a figure "Fig. P6.22".
+L = {};
+pats = {'^\s*(\d{1,2}\.\d{1,2})(?=\s+[A-Z(])', ...
+    '(?i)(?<![a-z])(?:prob(?:lem)?s?\.?|exercise|chapra)\s*#?\s*(\d{1,2}\.\d{1,2})(?![\d])', ...
+    '(?i)(?<![a-z])fig(?:ure)?\.?\s*P(\d{1,2}\.\d{1,2})(?![\d])'};
+for k = 1:numel(pats)
+    t = regexp(txt, pats{k}, 'tokens');
+    for j = 1:numel(t)
+        L{end+1} = t{j}{1}; %#ok<AGROW>
+    end
+end
+L = unique(L);
+end
+
+function L = local_sourceLabels(src)
+% Problem numbers of an example (SOURCE: "Chapra Prob. 5.11", "Chapra Probs. 21.21 and 21.24").
+% A source marked "earlier edition" is not matched by number: that number is another problem now.
+L = {};
+if ~isempty(strfind(lower(src), 'earlier edition'))
     return
 end
-if numel(setdiff(U, ex.numbers)) > 2
-    return
+t = regexp(src, '(?i)probs?\.\s*(\d+\.\d+(?:\s*(?:,|and|&)\s*\d+\.\d+)*)', 'tokens');
+for j = 1:numel(t)
+    L = [L, regexp(t{j}{1}, '\d+\.\d+', 'match')]; %#ok<AGROW>
 end
-if ~isequal(local_methodSet(kb, prompt), ex.methods)
-    return
-end
-idx = b;
+L = unique(L);
 end
 
 function v = local_numbers(txt)
 % Data values in a text: thousands separators removed; digits inside words (interp1, m3, ode45)
 % and problem/figure/table labels are ignored.
 txt = regexprep(txt, '(?<=\d),(?=\d{3}(?!\d))', '');
+% Exponents are lost when a problem is copied from a PDF: 10^3 -> 103, 10^-5 -> 10-5, h^2 -> h2,
+% cm^3 -> cm3. Powers of ten are written the way the PDF text reads; other exponents are skipped.
+txt = regexprep(txt, '(?<![\d.])10\s*\^\s*\(?\s*(-?)\s*(\d+)\s*\)?', '10$1$2');
+txt = regexprep(txt, '\^\s*\(?\s*-?\d*\.?\d+(\s*/\s*\d+)?\s*\)?', ' ');
+% "seventh-order" = "7th order".
+ord = {'first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh', 'eighth', 'ninth', 'tenth'};
+for k = 1:numel(ord)
+    txt = regexprep(txt, ['(?i)(?<![a-z])' ord{k} '(?=[\s\-]*(order|degree))'], sprintf('%dth', k));
+end
+% A leading textbook problem number ("6.22 You are designing ...").
+txt = regexprep(txt, '^\s*\d{1,2}\.\d{1,2}(?=\s+[A-Z(])', ' ');
 txt = regexprep(txt, ['(?i)\<(problem|prob\.?|example|ex\.?|exercise|fig\.?|figure|table|eq\.?|' ...
     'equation|section|sec\.?|chapter|ch\.?|page|slide|question|q\.?|set)[\s\-]*[A-Z]?\d+(\.\d+)*[a-z]?'], ' ');
 tok = regexp(txt, '(?<![A-Za-z_\d.])(\d+\.?\d*|\.\d+)', 'match');
@@ -3827,7 +3898,7 @@ end
 
 function E = local_readExamples(exDir, d, kb)
 E = struct('file', {}, 'title', {}, 'topic', {}, 'topicIdx', {}, 'source', {}, 'keywords', {}, ...
-    'problem', {}, 'checks', {}, 'skip', {}, 'code', {}, 'numbers', {}, 'methods', {});
+    'problem', {}, 'checks', {}, 'skip', {}, 'code', {}, 'numbers', {}, 'methods', {}, 'labels', {});
 topicNames = {kb.topics.name};
 for i = 1:numel(d)
     f = fullfile(exDir, d(i).name);
@@ -3837,7 +3908,8 @@ for i = 1:numel(d)
     end
     lines = regexp(txt, '\n', 'split');
     e = struct('file', f, 'title', '', 'topic', '', 'topicIdx', 0, 'source', '', 'keywords', {{}}, ...
-        'problem', '', 'checks', {{}}, 'skip', false, 'code', '', 'numbers', zeros(1, 0), 'methods', zeros(1, 0));
+        'problem', '', 'checks', {{}}, 'skip', false, 'code', '', 'numbers', zeros(1, 0), 'methods', zeros(1, 0), ...
+        'labels', {{}});
     prob = {};
     key = '';
     codeStart = 0;
@@ -3895,6 +3967,7 @@ for i = 1:numel(d)
     end
     e.numbers = local_numbers(e.problem);
     e.methods = local_methodSet(kb, e.problem);
+    e.labels = local_sourceLabels(e.source);
     E(end+1) = e; %#ok<AGROW>
 end
 end

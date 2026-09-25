@@ -5,7 +5,8 @@ METHODS: linear regression, straight line, linregr | polynomial regression, para
 CHEATSHEET:
 - Straight line: [a,r2,syx] = fit_linear(x,y) gives y = a(1)*x + a(2); also p = polyfit(x,y,1).
 - Polynomial: [p,r2,syx] = fit_poly(x,y,n) (p for polyval, highest power first); multiple: [a,r2,syx] = fit_multilinear([x1 x2],y)
-  gives y = a(1) + a(2)*x1 + a(3)*x2; general basis: Z = [ones(n,1) z1 z2 ...]; a = (Z'*Z)\(Z'*y) (fit_general(Z,y)).
+  gives y = a(1) + a(2)*x1 + a(3)*x2; general basis: Z = [ones(n,1) z1 z2 ...]; a = Z\y (fit_general(Z,y)); use (Z'*Z)\(Z'*y) only when
+  the normal equations are asked for (they lose digits when cond(Z) is large, e.g. 1/T and T^2 columns).
 - Linearized models: fit_power (y = alpha*x^beta, log10), fit_exponential (y = alpha*exp(beta*x), ln),
   fit_saturation (y = alpha*x/(beta+x), 1/y vs 1/x). For other forms transform, fit a line, transform back.
 - Nonlinear: [p,SSR,r2] = fit_nonlinear(@(p,x) model, p0, x, y) or fminsearch(@(p) sum((y - model(p,x)).^2), p0).
