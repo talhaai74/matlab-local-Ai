@@ -106,11 +106,28 @@ ru looks at each PC by itself and remembers what it learned in
 * **Old processors** (Core 2 Duo, Pentium dual-core, no AVX) work: the engine has
   a build for them. They are slow; qwen2.5-coder:3b is chosen on such PCs when the
   memory is small.
-* **Nothing is loaded twice.** Every request uses the same context size (a
+* **Nothing is loaded twice.** Every request uses the same load settings (a
   change would make the engine reload the whole model), the fixed part of the
-  prompt comes first so the engine can reuse it, and a model stays in memory for
-  60 minutes after the last question. While you paste a problem into the `ru` box,
-  the model already loads in the background.
+  prompt comes first so the engine can reuse it, and the model stays in memory for
+  4 hours after the last question (a whole exam; `ru stop` frees it earlier). While
+  you paste a problem into the `ru` box, the model already loads in the background.
+  Type `ru start` at the beginning of an exam to load it while you read the paper.
+* **Fast engine start on PCs without a graphics card** (most lab PCs). Before the
+  first start ru reads the PC's display adapters from Windows; with only Intel
+  HD/UHD/Iris or basic adapters, and on every later start of a PC where no usable
+  card was found, the engine skips its graphics check (which loads the CUDA and
+  Vulkan libraries from the pendrive and can take a minute).
+* **Fast decoding (MTP).** qwen3.5 has extra layers that guess the next tokens; the
+  model checks every guess, so the answer is exactly what it would write anyway,
+  only faster. It is on for processors with AVX2 and 4 or more cores (Intel Core
+  4th generation and newer, AMD Ryzen); on older or 2-core processors checking
+  guesses would cost more than it saves, so it stays off. If it ever fails on a
+  PC, ru switches it off there and asks again. `ru status` shows the choice.
+* **Short prompts.** On a processor, reading the prompt takes most of the time.
+  ru sends the full documentation only of the library functions the problem needs
+  (the methods it names and those the closest solved examples use), about a
+  quarter less text, with no accuracy cost: all function names are always listed,
+  and a failed call gets that function's full documentation with the retry.
 * **Waiting.** A one-line progress note (`ru: writing code ...`) is shown and
   erased again (MATLAB R2025a and newer cannot erase text, so there it stays as one
   line). Timeouts are set from this PC's measured speed, so a slow PC is not cut off.

@@ -741,11 +741,13 @@ kb = local_kb(root);
 env = local_env();
 conv = local_convLoad(root);
 follow = local_isFollowUp(prompt, conv);
+ctx = local_retrieve(kb, prompt);
+if follow && ctx.direct > 0 && ~opts.forceAI
+    follow = false;                  % a verified problem on its own is never a follow-up
+end
 if follow
     ctx = local_retrieve(kb, [conv{end}.prompt char(10) prompt]);
     ctx.direct = 0;
-else
-    ctx = local_retrieve(kb, prompt);
 end
 turnPrompt = prompt;
 if ~isempty(opts.turnPrompt)
@@ -787,8 +789,9 @@ end
 numPredict = 2048;
 numCtx = E.ctx;
 if think
-    numCtx = local_thinkCtx(root, E);
-    numPredict = min(12000, floor(numCtx / 2));
+    % Same context as every other request (a different one makes the engine load the whole model again,
+    % twice: now and at the next normal question); the reasoning gets up to 10k tokens of it.
+    numPredict = max(2048, min(10240, numCtx - 6144));
 end
 baseMsgs = local_buildSolveMessages(root, prompt, kb, env, ctx, conv, follow, opts, numCtx, numPredict);
 ctxNoEx = ctx;
@@ -927,19 +930,6 @@ local_err('[ru] Try: ru again | ru think <problem> | name the method and give ev
 local_writeText(fullfile(local_brain(root), 'last_code.txt'), prevCode);
 local_convAdd(root, 'solve', turnPrompt, prevCode, 'FAILED: no working code.', false);
 local_log(root, 'RESULT: FAILED');
-end
-
-function numCtx = local_thinkCtx(root, E)
-% Thinking needs room for a long answer: a 32k context when the memory allows it.
-numCtx = E.ctx;
-if E.maxCtx < 32768
-    return
-end
-mem = local_memBudget(root, {E.host});
-need = local_memNeed(E.model, E.bytes, 32768);
-if ~local_isLocalHost(E.host) || isnan(mem.avail) || need <= mem.avail + local_memNeed(E.model, E.bytes, E.ctx)
-    numCtx = 32768;
-end
 end
 
 function tf = local_isLoaded(E)
@@ -1553,6 +1543,16 @@ for k = 1:numel(tok)
             found = true;
         end
     end
+    if ~found
+        % A power of ten whose ^ was lost when the text was copied from a PDF: 103 = 10^3, 1014 = 10^14.
+        t10 = regexp(s, '^10(\d{1,2})$', 'tokens', 'once');
+        if ~isempty(t10)
+            e = str2double(t10{1});
+            found = any(abs(cval - 10^e) <= 1e-9 * 10^e) || ...
+                ~isempty(regexp(c, sprintf('10\\s*\\^\\s*\\(?\\s*-?\\s*%d(?!\\d)', e), 'once')) || ...
+                ~isempty(regexp(c, sprintf('\\d[eE][-+]?0*%d(?!\\d)', e), 'once'));
+        end
+    end
     if ~found && ~any(strcmp(missing, s))
         missing{end+1} = s; %#ok<AGROW>
     end
@@ -1960,7 +1960,11 @@ if local_isLoaded(E)
 else
     local_busy(sprintf('ru: loading %s into memory (first use), then answering ...', E.model));
 end
-[reply, ~, err, E] = local_llm(root, E, msgs, 0.3, 1500, think);
+nPredict = 1500;
+if think
+    nPredict = max(2048, min(10240, E.ctx - 4096));    % the reasoning counts too
+end
+[reply, ~, err, E] = local_llm(root, E, msgs, 0.3, nPredict, think);
 local_busy('');
 if ~isempty(err)
     local_err('[ru] AI engine error: %s\n', err);
@@ -2190,25 +2194,30 @@ if isempty(strtrim(text))
     return
 end
 fprintf('\n[ru] Text read from the image:\n%s\n', text);
+shown = false;
 if local_desktop()
     lines = regexp(text, '\n', 'split');
     a = {};
     try
         a = inputdlg({['Check the text read from the image. Fix any wrong number or symbol, add anything missing ' ...
             '(e.g. values shown only in the figure), then press OK:']}, 'ru: check the problem', [24 130], {char(lines)});
+        shown = true;
     catch
     end
-    if isempty(a)
-        fprintf('[ru] Cancelled. (The text is in the conversation memory; ru again will not use it.)\n');
+    if shown && isempty(a)
+        fprintf('[ru] Cancelled.\n');
         return
     end
-    v = a{1};
-    if size(v, 1) > 1
-        text = strjoin(cellstr(v)', char(10));
-    else
-        text = v;
+    if shown
+        v = a{1};
+        if size(v, 1) > 1
+            text = strjoin(cellstr(v)', char(10));
+        else
+            text = v;
+        end
     end
-else
+end
+if ~shown
     fprintf(['[ru] Solving this text. If a number was read wrongly, copy the text above, correct it and use  ' ...
         'ru  (paste box) instead.\n']);
 end
@@ -2439,9 +2448,14 @@ q = lower(prompt);
 strong = ~isempty(regexp(q, ['\<(previous|above|earlier|last (problem|question|answer|code|result|one|graph|plot)|' ...
     'same (data|problem|function|values|equation|equations|matrix|system|question)|' ...
     'that (problem|code|result|answer|plot|graph|function)|the code|your code|this code|redo|rerun|re-run|instead)\>'], 'once'));
-weak = ~isempty(regexp(q, ['^\s*(and|also|now|then|next|but|so|what about|how about|ok|okay)\>|\<(it|them|again|' ...
-    'change|modify|update|continue|increase|decrease|more|less|smaller|bigger|larger|explain|why)\>'], 'once'));
-tf = strong || (numel(prompt) < 220 && weak);
+% A short message that starts like a continuation ("now use RK4", "and plot it"), or a short one without
+% data of its own ("why is the error so large?", "change it to 0.1"). A problem that brings its own
+% numbers ("find the root of x^3 - 2x - 5 between 2 and 3 and plot it") is a new problem.
+lead = ~isempty(regexp(q, '^\s*(and|also|now|then|next|but|so|what about|how about|ok|okay|same|again)\>', 'once'));
+weak = ~isempty(regexp(q, ['\<(it|them|again|change|modify|update|continue|increase|decrease|more|less|' ...
+    'smaller|bigger|larger|explain|why)\>'], 'once'));
+nNum = numel(local_numbers(prompt));
+tf = strong || (numel(prompt) < 200 && lead) || (numel(prompt) < 160 && weak && nNum <= 2);
 end
 
 function [msgs, older] = local_convContext(conv, pass)
@@ -3561,6 +3575,11 @@ s = strrep(s, char(13), '');
 if all(double(s) < 128)
     return
 end
+% Letters and digits of Word/OneNote equations (math italic x, bold 2, ...) -> plain ones.
+d = double(s);
+if any(d >= 55296 & d <= 57343) || any(d == 8462)
+    s = char(local_mathAlnum(d));
+end
 % Superscripts: 10^-5, x^2, ...
 supFrom = [8304 185 178 179 8308:8313 8315 8314 8319 739 8317 8318];
 supTo = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '-', '+', 'n', 'x', '(', ')'};
@@ -3601,7 +3620,9 @@ end
 pairs = {
     160, ' '; 8201, ' '; 8202, ' '; 8203, ''; 8239, ' '; 65279, ''
     8216, ''''; 8217, ''''; 8242, ''''; 8243, ''''''; 8220, '"'; 8221, '"'
-    8211, '-'; 8212, '-'; 8722, '-'; 8208, '-'; 8209, '-'
+    8211, '-'; 8212, '-'; 8722, '-'; 8208, '-'; 8209, '-'; 8210, '-'; 8213, '-'; 173, ''; 8289, ''
+    64256, 'ff'; 64257, 'fi'; 64258, 'fl'; 64259, 'ffi'; 64260, 'ffl'; 64261, 'st'; 64262, 'st'
+    8727, '*'; 180, ''''; 8462, 'h'
     215, '*'; 183, '*'; 8729, '*'; 8901, '*'; 247, '/'; 8260, '/'; 8725, '/'
     8804, '<='; 8805, '>='; 8800, '~='; 8776, '~'; 177, '+/-'; 8734, 'Inf'
     8730, 'sqrt'; 8747, 'integral '; 8721, 'sum '; 8706, 'd'; 8710, 'Delta'; 8711, 'grad'
@@ -3619,6 +3640,39 @@ s = regexprep(s, [char(176) '\s*F(?![a-z])'], ' degF');
 s = strrep(s, char(176), ' deg');
 for k = 1:size(pairs, 1)
     s = strrep(s, char(pairs{k, 1}), pairs{k, 2});
+end
+end
+
+function out = local_mathAlnum(d)
+% UTF-16 code units (double) -> the same text with the Mathematical Alphanumeric Symbols (U+1D400..
+% U+1D7FF, written as surrogate pairs) replaced by plain A-Z, a-z, 0-9; other characters unchanged.
+out = zeros(1, 0);
+k = 1;
+n = numel(d);
+while k <= n
+    c = d(k);
+    if c >= 55296 && c <= 56319 && k < n && d(k+1) >= 56320 && d(k+1) <= 57343
+        cp = 65536 + (c - 55296) * 1024 + (d(k+1) - 56320);
+        if cp >= hex2dec('1D400') && cp <= hex2dec('1D6A3')
+            j = mod(cp - hex2dec('1D400'), 52);
+            if j < 26
+                out(end+1) = 65 + j; %#ok<AGROW>
+            else
+                out(end+1) = 97 + j - 26; %#ok<AGROW>
+            end
+        elseif cp >= hex2dec('1D7CE') && cp <= hex2dec('1D7FF')
+            out(end+1) = 48 + mod(cp - hex2dec('1D7CE'), 10); %#ok<AGROW>
+        else
+            out = [out c d(k+1)]; %#ok<AGROW>
+        end
+        k = k + 2;
+    elseif c == 8462
+        out(end+1) = double('h'); %#ok<AGROW>    % Planck-style italic h used by Word equations
+        k = k + 1;
+    else
+        out(end+1) = c; %#ok<AGROW>
+        k = k + 1;
+    end
 end
 end
 
@@ -3779,23 +3833,92 @@ for t = chosen
 end
 exCode = lower(strjoin({kb.examples(ctx.examples).code}, ' '));
 used = false(1, numel(kb.lib));
+named = ismember(names, local_namedLibFunctions(p));
 pri = zeros(1, numel(kb.lib));
 for k = 1:numel(kb.lib)
     used(k) = ~isempty(strfind(exCode, lower(names{k})));
     parts = strsplit(names{k}, '_');
-    if used(k)
-        pri(k) = pri(k) + 2;
-    end
+    pri(k) = 3 * named(k) + 2 * used(k);
     if numel(parts) > 1 && numel(parts{2}) > 3 && ~isempty(strfind(p, parts{2}))
         pri(k) = pri(k) + 1;
     end
 end
-cand = find(isCand | used);
-[~, o] = sort(pri(cand), 'descend');
-cand = cand(o);
-ctx.libFull = cand(1:min(8, numel(cand)));
+% Full help only for what this problem needs (every prompt token costs time on a processor): the
+% functions of the methods it names and those the solved examples use, at least three of the topic.
+% The names of all functions are in the system part, and a failed call gets its full help (hints).
+core = find(used | named);
+[~, o] = sort(pri(core), 'descend');
+core = core(o);
+rest = setdiff(find(isCand), core, 'stable');
+[~, o] = sort(pri(rest), 'descend');
+rest = rest(o);
+ctx.libFull = [core(1:min(6, numel(core))), rest(1:min(max(0, 3 - numel(core)), numel(rest)))];
 
 ctx.direct = local_directMatch(kb, prompt, sims);
+end
+
+function names = local_namedLibFunctions(p)
+% ru_lib functions of the methods a (lower-case) problem text names.
+persistent T
+if isempty(T)
+    T = {'bisect|half-interval', {'root_bisection'};
+        'false[- ]position|regula[- ]?falsi', {'root_falseposition'};
+        'newton[- ]raphson|newton''?s method|newtraph', {'root_newton'};
+        'system of (non-?linear|simultaneous non-?linear) equations|non-?linear (system|equations)', {'root_newtonsys'};
+        '(?<!modified )secant', {'root_secant'};
+        'modified secant', {'root_modsecant'};
+        'fixed[- ]point|simple iteration', {'root_fixedpoint'};
+        'incremental search', {'root_incsearch'};
+        'golden', {'opt_golden'};
+        'trapezoid|trapz', {'integ_trap'};
+        'simpson', {'integ_simp13', 'integ_simp38', 'integ_simpdata'};
+        'romberg', {'integ_romberg'};
+        'gauss(ian)? quadrature|gauss[- ]legendre|(two|three)[- ]point gauss', {'integ_gauss'};
+        'boole|newton[- ]cotes', {'integ_newtoncotes'};
+        'euler', {'ode_euler'};
+        'heun', {'ode_heun'};
+        'midpoint', {'ode_midpoint'};
+        'ralston', {'ode_ralston'};
+        'runge[- ]kutta|(?<![a-z])rk4|fourth[- ]order rk', {'ode_rk4'};
+        'shooting', {'ode_shooting'};
+        'boundary[- ]value', {'ode_fdbvp', 'ode_shooting'};
+        'lagrange', {'interp_lagrange'};
+        'divided difference|newton''?s? interpolat', {'interp_newton', 'interp_divdiff'};
+        'natural (cubic )?spline|natural end', {'interp_natspline'};
+        'naive gauss|gauss(ian)? elimination', {'lin_gaussnaive'};
+        'pivot', {'lin_gausspivot'};
+        'gauss[- ]jordan', {'lin_gaussjordan'};
+        '(?<![a-z])lu(?![a-z])', {'lin_lu', 'lin_lusolve'};
+        'cholesky', {'lin_cholesky'};
+        'tridiagonal|thomas', {'lin_tridiag'};
+        'gauss[- ]seidel', {'lin_gaussseidel'};
+        'jacobi', {'lin_jacobi'};
+        'cramer', {'lin_cramer'};
+        'power method', {'eig_power'};
+        'linear regression|straight line|least[- ]squares? line', {'fit_linear'};
+        'polynomial regression|parabola|quadratic fit|cubic fit', {'fit_poly'};
+        'multiple (linear )?regression', {'fit_multilinear'};
+        'general linear least|basis function', {'fit_general'};
+        'non-?linear regression|fminsearch', {'fit_nonlinear'};
+        'power (model|law|equation)', {'fit_power'};
+        'exponential model', {'fit_exponential'};
+        'saturation[- ]growth', {'fit_saturation'};
+        'richardson', {'diff_richardson'};
+        '(forward|backward|centered|central) (finite[- ])?difference', {'diff_fd'};
+        'fourier series', {'fourier_series'};
+        '(?<![a-z])dft(?![a-z])|discrete fourier', {'fourier_dft'};
+        'power spectrum|periodogram', {'fourier_spectrum'};
+        'sinusoid', {'fourier_sinefit'};
+        't[- ]test|ttest', {'stat_ttest', 'stat_ttest2'};
+        'confidence interval', {'stat_ci_mean'};
+        'histogram', {'stat_hist'}};
+end
+names = {};
+for k = 1:size(T, 1)
+    if ~isempty(regexp(p, T{k, 1}, 'once'))
+        names = [names, T{k, 2}]; %#ok<AGROW>
+    end
+end
 end
 
 function idx = local_directMatch(kb, prompt, sims)
@@ -5083,6 +5206,9 @@ if isempty(H)
         H.threads = H.cores;
     end
     H.cpu = regexprep(H.cpu, '\s+', ' ');
+    if ~isempty(getenv('RU_TEST_CPU'))              % tests only
+        H.cpu = getenv('RU_TEST_CPU');
+    end
 end
 hw = H;
 [hw.ramTotal, hw.ramFree] = local_ram();
@@ -5143,8 +5269,8 @@ if ~isempty(cache) && strcmp(cacheFile, f)
     P = cache;
     return
 end
-P = struct('gpuChecked', false, 'cpuOnly', false, 'gpuEnv', struct(), 'gpus', [], 'models', [], ...
-    'model', 'auto', 'vision', 'auto');
+P = struct('gpuChecked', false, 'cpuOnly', false, 'noGpu', false, 'noDraft', false, 'gpuEnv', struct(), ...
+    'gpus', [], 'models', [], 'model', 'auto', 'vision', 'auto');
 if exist(f, 'file') == 2
     try
         r = jsondecode(local_readText(f));
@@ -5168,6 +5294,8 @@ if ~ischar(P.vision) || isempty(P.vision)
 end
 P.gpuChecked = isequal(P.gpuChecked, true) || isequal(P.gpuChecked, 1);
 P.cpuOnly = isequal(P.cpuOnly, true) || isequal(P.cpuOnly, 1);
+P.noGpu = isequal(P.noGpu, true) || isequal(P.noGpu, 1);
+P.noDraft = isequal(P.noDraft, true) || isequal(P.noDraft, 1);
 cache = P;
 cacheFile = f;
 end
@@ -5249,6 +5377,31 @@ for k = 1:numel(g)
     e.used = ~(off && strcmpi(e.library, 'vulkan')) && ~prof.cpuOnly;
     G(end+1) = e; %#ok<AGROW>
 end
+end
+
+function names = local_displayAdapters()
+% Names of the display adapters Windows knows (registry; fast, no PowerShell).
+names = {};
+if ~ispc
+    return
+end
+key = 'SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}';
+for k = 0:15
+    try
+        d = winqueryreg('HKEY_LOCAL_MACHINE', sprintf('%s\\%04d', key, k), 'DriverDesc');
+        if ischar(d) && ~isempty(strtrim(d))
+            names{end+1} = strtrim(d); %#ok<AGROW>
+        end
+    catch
+    end
+end
+end
+
+function tf = local_isIntegratedAdapter(name)
+% Intel HD/UHD/Iris graphics (not Arc) and basic/remote/virtual adapters: nothing the AI engine uses.
+tf = (~isempty(regexpi(name, 'intel', 'once')) && isempty(regexpi(name, 'arc', 'once'))) || ...
+    ~isempty(regexpi(name, ['microsoft basic|basic display|remote display|hyper-v|vmware|virtualbox|' ...
+    'citrix|parsec|displaylink|virtual display|indirect display|spacedesk|splashtop|teamviewer|radmin|mirage'], 'once'));
 end
 
 function G = local_parseGpus(logText, ramTotal)
@@ -5352,13 +5505,31 @@ if isempty(exe)
 end
 prof = local_profile(root);
 mode = lower(local_setting(root, 'gpu', 'auto'));
-env = {'OLLAMA_HOST', '127.0.0.1:11435'; 'OLLAMA_NOPRUNE', '1'; 'OLLAMA_KEEP_ALIVE', '60m'; ...
+env = {'OLLAMA_HOST', '127.0.0.1:11435'; 'OLLAMA_NOPRUNE', '1'; 'OLLAMA_KEEP_ALIVE', local_keepAlive(); ...
     'OLLAMA_MAX_LOADED_MODELS', '1'; 'OLLAMA_NUM_PARALLEL', '1'; 'OLLAMA_LOAD_TIMEOUT', '30m'};
 md = local_modelsDir(root);
 if ~isempty(md)
     env(end+1, :) = {'OLLAMA_MODELS', md};
 end
 cpu = cpuOnly || strcmp(mode, 'off') || (strcmp(mode, 'auto') && prof.cpuOnly);
+if ~cpu && strcmp(mode, 'auto') && ~prof.gpuChecked && ispc
+    % First start on this PC: when Windows lists only integrated or basic display adapters (typical lab
+    % PC), there is nothing for the engine to find, so its slow graphics check is skipped from the start.
+    ad = local_displayAdapters();
+    if ~isempty(ad) && all(cellfun(@local_isIntegratedAdapter, ad))
+        prof.gpuChecked = true;
+        prof.noGpu = true;
+        prof.gpus = [];
+        prof.gpuEnv = struct();
+        local_profile(root, prof);
+    end
+end
+% No usable graphics card: the engine skips its graphics check (loading the CUDA and Vulkan libraries
+% from the pendrive can take a minute) and runs on the processor straight away.
+noGpu = cpu || (strcmp(mode, 'auto') && prof.gpuChecked && prof.noGpu);
+if noGpu
+    env(end+1, :) = {'OLLAMA_LLM_LIBRARY', 'cpu'};
+end
 if cpu
     env = [env; {'CUDA_VISIBLE_DEVICES', '-1'; 'HIP_VISIBLE_DEVICES', '-1'; 'ROCR_VISIBLE_DEVICES', '-1'; ...
         'OLLAMA_VULKAN', '0'; 'GGML_VK_VISIBLE_DEVICES', '-1'}];
@@ -5425,7 +5596,7 @@ if st ~= 0 || ~isempty(regexpi(out, 'blocked|denied|group policy|cannot find|not
 end
 t0 = tic;
 while toc(t0) < 180
-    pause(1);
+    pause(0.4);
     if local_ping(local_pendHost())
         ok = true;
         break
@@ -5484,6 +5655,7 @@ if ~cpu && strcmp(mode, 'auto') && ~prof.gpuChecked
     prof.gpus = G;
     prof.gpuEnv = genv;
     prof.gpuChecked = true;
+    prof.noGpu = isempty(G) || all([G.integrated]);
     local_profile(root, prof);
     if changed
         local_killEngine();
@@ -5564,9 +5736,10 @@ try
     end
     [st, out] = system(sprintf(['powershell -NoProfile -NonInteractive -Command "(Get-Process -Id %s ' ...
         '-ErrorAction SilentlyContinue).Path"'], pid{1}));
-    out = strtrim(out);
-    if st == 0 && ~isempty(regexp(out, '^[A-Za-z]:\\.*\.exe$', 'once'))
-        exe = out;
+    % (A network current folder makes cmd print a UNC warning first: take the line with the path.)
+    p = regexp(out, '[A-Za-z]:\\[^\r\n]*?\.exe(?=\s*($|[\r\n]))', 'match');
+    if st == 0 && ~isempty(p)
+        exe = strtrim(p{end});
     end
 catch
 end
@@ -5649,6 +5822,16 @@ for tries = 1:3
         detail = [err ' ' local_readTail(logf, logPos)];
     end
     kind = local_errorKind(detail);
+    if own && local_draftN() > 0 && tries < 3 && (strcmp(kind, 'crash') || ...
+            ~isempty(regexpi(detail, 'spec|draft|mtp', 'once')))
+        % Fast decoding (MTP) failed here: off for good on this PC, and the same question again.
+        local_err('[ru] Fast decoding (MTP) failed on this PC; it is now off here.\n');
+        P = local_profile(root);
+        P.noDraft = true;
+        local_profile(root, P);
+        local_draftN(0);
+        continue
+    end
     if strcmp(kind, 'memory')
         % No automatic switch to a smaller model: that happens only with  ru model <name>.
         hw = local_hw(root);
@@ -5789,8 +5972,61 @@ end
 end
 
 function o = local_options(temperature, numCtx, numPredict)
+% The load-time options (num_ctx, draft_num_predict) are the same in every request, so the engine
+% never reloads the model because of them.
 o = struct('temperature', temperature, 'num_ctx', numCtx, 'num_predict', numPredict, ...
-    'top_p', 0.9, 'top_k', 40, 'seed', 42);
+    'top_p', 0.9, 'top_k', 40, 'seed', 42, 'draft_num_predict', local_draftN());
+end
+
+function k = local_keepAlive()
+% How long the engine keeps the model in memory after the last question: a whole exam, so it is
+% never loaded from the pendrive twice (ru stop frees the memory earlier).
+k = '4h';
+end
+
+function n = local_draftN(set)
+% Multi-token prediction (MTP): qwen3.5 has extra layers that guess the next tokens; the model checks
+% every guess, so the answer is exactly what it would write anyway, only faster. Checking several
+% tokens at once pays off on processors with AVX2 and 4+ cores (roughly 2013 and newer); on older
+% or 2-core processors it would be slower, so it stays off there. Off for good on a PC where it failed.
+persistent N
+if nargin == 1
+    N = set;
+end
+if isempty(N)
+    N = 0;
+    try
+        root = fileparts(mfilename('fullpath'));
+        hw = local_hw(root);
+        P = local_profile(root);
+        if ~P.noDraft && hw.cores >= 4 && local_cpuHasAvx2(hw.cpu)
+            N = 3;
+        end
+    catch
+    end
+end
+n = N;
+end
+
+function tf = local_cpuHasAvx2(name)
+% true only for processor families known to have AVX2 (conservative: unknown -> false).
+tf = false;
+s = lower(name);
+if ~isempty(regexp(s, 'ryzen|threadripper|epyc|core\S*\s*ultra|core\S*\s*[3579]\s+\d{3}', 'once'))
+    tf = true;
+    return
+end
+t = regexp(s, 'core\S*\s*i[3579]-(\d{3,5})', 'tokens', 'once');
+if ~isempty(t)
+    d = t{1};
+    if numel(d) == 5
+        tf = true;                                   % 10th generation and newer (i5-10400, i7-12700)
+    elseif numel(d) == 4
+        tf = d(1) >= '4' || (d(1) == '1' && d(2) <= '4');  % 4th-9th gen (i5-4590) or i5-1135G7 style
+    end
+    return
+end
+tf = ~isempty(regexp(s, 'xeon.*(e[357]-\d{4}\w?\s*v[3-9]|bronze|silver|gold|platinum|w-\d{4,5})', 'once'));
 end
 
 function [txt, cut, err, st] = local_chat(host, model, msgs, temperature, numCtx, numPredict, think, caps, timeout)
@@ -5798,7 +6034,7 @@ txt = '';
 cut = false;
 err = '';
 st = struct('pp', 0, 'tg', 0, 'load', 0, 'promptN', 0, 'genN', 0);
-body = struct('model', model, 'stream', false, 'keep_alive', '60m');
+body = struct('model', model, 'stream', false, 'keep_alive', local_keepAlive());
 body.messages = msgs;
 body.options = local_options(temperature, numCtx, numPredict);
 if any(strcmp(caps, 'thinking'))
@@ -5867,7 +6103,7 @@ L = local_loaded(E.host);
 if any(strcmp({L.name}, E.model))
     return
 end
-body = struct('model', E.model, 'stream', false, 'keep_alive', '60m');
+body = struct('model', E.model, 'stream', false, 'keep_alive', local_keepAlive());
 body.messages = {local_msg('system', sys)};
 body.options = local_options(0.1, E.ctx, 1);
 if any(strcmp(E.caps, 'thinking'))
@@ -5950,6 +6186,17 @@ else
     end
 end
 fprintf('GPU setting     : %s  (ru gpu auto | on | off)\n', gmode);
+if strcmp(gmode, 'off') || prof.cpuOnly || (strcmp(gmode, 'auto') && prof.gpuChecked && prof.noGpu)
+    fprintf('Engine start    : fast (no usable graphics card, so the engine skips its graphics check)\n');
+end
+if local_draftN() > 0
+    fprintf('Fast decoding   : on (MTP, %d tokens checked at once; same answers, written faster)\n', local_draftN());
+elseif prof.noDraft
+    fprintf('Fast decoding   : off (it failed on this PC before)\n');
+else
+    fprintf('Fast decoding   : off (this processor would not gain from it)\n');
+end
+fprintf('Model in memory : kept for %s after the last question (ru stop frees it)\n', local_keepAlive());
 fprintf('MATLAB          : %s\n', version);
 fprintf('%s\n', env.toolboxLine(1:find(env.toolboxLine == '.', 1)));
 fprintf('Solver library  : %d functions (ru_lib)\n', numel(kb.lib));
@@ -6090,6 +6337,7 @@ if strcmp(key, 'gpu')
     P.cpuOnly = false;
     if strcmp(v, 'auto')
         P.gpuChecked = false;                 % detect the graphics devices again at the next start
+        P.noGpu = false;
         P.gpuEnv = struct();
     end
     local_profile(root, P);

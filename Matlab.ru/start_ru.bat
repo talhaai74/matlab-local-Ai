@@ -43,10 +43,10 @@ set "TMP=%RU_DIR%brain\tmp"
 set "TEMP=%RU_DIR%brain\tmp"
 set "OLLAMA_MODELS=%RU_DIR%model"
 set "OLLAMA_HOST=127.0.0.1:11435"
-rem never delete model files on the pendrive, keep one model in memory for 60 min,
+rem never delete model files on the pendrive, keep one model in memory for 4 hours (a whole exam),
 rem allow 30 min to load a big model from a slow pendrive
 set "OLLAMA_NOPRUNE=1"
-set "OLLAMA_KEEP_ALIVE=60m"
+set "OLLAMA_KEEP_ALIVE=4h"
 set "OLLAMA_LOAD_TIMEOUT=30m"
 set "OLLAMA_MAX_LOADED_MODELS=1"
 set "OLLAMA_NUM_PARALLEL=1"

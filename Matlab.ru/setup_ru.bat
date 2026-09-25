@@ -32,6 +32,8 @@ set "PATH=%RU_OLLAMA%;%RU_OLLAMA%\lib\ollama;%SystemRoot%\System32;%SystemRoot%;
 set "OLLAMA_MODELS=%RU_DIR%model"
 set "OLLAMA_HOST=127.0.0.1:11435"
 set "OLLAMA_NOPRUNE=1"
+rem Downloading needs no graphics card: skip the engine's graphics check (it can take minutes).
+set "OLLAMA_LLM_LIBRARY=cpu"
 
 echo.
 echo ru setup - folder: %RU_DIR%
@@ -116,7 +118,7 @@ set /a TRIES=0
 curl.exe -s --noproxy "*" -m 2 http://127.0.0.1:11435/api/version >nul 2>&1
 if not errorlevel 1 goto engineok
 set /a TRIES+=1
-if !TRIES! GEQ 60 (
+if !TRIES! GEQ 120 (
     echo The engine did not start. Close any "ru engine" window and run setup_ru.bat again.
     pause
     exit /b 1
