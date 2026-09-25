@@ -11,6 +11,8 @@ function varargout = ru(varargin)
 %   ru fix [note]         fix the last error from your own Command Window work
 %   ru again [hint]       solve the last problem again with another approach
 %   ru think <problem>    solve with step-by-step reasoning (slower; qwen3.5)
+%   ru sure <problem>     solve, then check with an independent second solution
+%   ru sure [auto|on|off] double-check AI answers automatically (auto: when fast)
 %   ru ai <problem>       skip the stored slide solutions and ask the AI
 %   ru history [n]        show the conversation memory;  ru new  clears it
 %   ru remember <rule>    keep a rule forever, e.g. ru remember my student ID is 2104055
@@ -66,7 +68,7 @@ if numel(args) == 1
     tok = regexp(args{1}, '^\s*(\S+)\s+(.+)$', 'tokens', 'once');
     if ~isempty(tok) && any(strcmpi(tok{1}, {'remember', 'ask', 'explain', 'fix', 'again', 'retry', 'think', ...
             'ai', 'img', 'image', 'shot', 'screenshot', 'history', 'model', 'vision', 'host', 'save', '--retrieve', ...
-            'verbose', 'gpu'}))
+            'verbose', 'gpu', 'sure'}))
         args = {tok{1}, tok{2}};
     end
 end
@@ -202,6 +204,15 @@ switch cmd
             local_route(root, rest, opts);
             return
         end
+    case 'sure'
+        if alone || any(strcmpi(rest, {'on', 'off', 'auto'}))
+            local_settingCommand(root, 'sure', rest);
+            return
+        end
+        opts.sure = true;
+        opts.forceSolve = true;
+        local_route(root, rest, opts);
+        return
     case {'history', 'memory', 'conversation'}
         if numel(args) <= 2
             local_showHistory(root, rest);
@@ -271,7 +282,7 @@ end
 
 function o = local_opts()
 o = struct('forceAI', false, 'forceSolve', false, 'think', false, 'again', false, ...
-    'label', '', 'extraContext', '', 'turnPrompt', '', 'keepAll', false);
+    'label', '', 'extraContext', '', 'turnPrompt', '', 'keepAll', false, 'sure', false);
 end
 
 function args = local_args(in)
@@ -830,7 +841,18 @@ for attempt = 1:maxAttempts
         local_busy(sprintf('ru: correcting it (attempt %d of %d) ...', attempt, maxAttempts));
     end
     local_say(root, '[ru] Asking %s (attempt %d of %d)...\n', E.model, attempt, maxAttempts);
-    [reply, cut, err, E] = local_llm(root, E, msgs, temps(attempt), numPredict, think, numCtx);
+    useThink = think;
+    nPredict = numPredict;
+    if ~think && attempt == 3 && any(strcmp(E.caps, 'thinking'))
+        % Two attempts failed: the third one reasons step by step first (same context: no reload).
+        tp = local_thinkPredict(msgs, numCtx);
+        if tp > 0
+            useThink = true;
+            nPredict = tp;
+            local_busy(sprintf('ru: thinking it through (attempt %d of %d) ...', attempt, maxAttempts));
+        end
+    end
+    [reply, cut, err, E] = local_llm(root, E, msgs, temps(attempt), nPredict, useThink, numCtx);
     if ~isempty(err)
         local_log(root, ['ENGINE ERROR: ' err]);
         if isempty(best.code)
@@ -852,7 +874,12 @@ for attempt = 1:maxAttempts
                 best = struct('code', code, 'output', info.output, 'warnings', {warnings});
             end
             if isempty(feedback)
-                local_finish(root, turnPrompt, code, info.output, t0, sprintf('AI attempt %d', attempt), warnings);
+                how = sprintf('AI attempt %d', attempt);
+                if local_wantDoubleCheck(root, E, opts, follow, code, info)
+                    [code, info, warnings, how] = local_doubleCheck(root, E, kb, prompt, baseMsgs, code, info, ...
+                        warnings, numCtx, how, ctx.topics, verbose);
+                end
+                local_finish(root, turnPrompt, code, info.output, t0, how, warnings);
                 ok = true;
                 return
             end
@@ -930,6 +957,222 @@ local_err('[ru] Try: ru again | ru think <problem> | name the method and give ev
 local_writeText(fullfile(local_brain(root), 'last_code.txt'), prevCode);
 local_convAdd(root, 'solve', turnPrompt, prevCode, 'FAILED: no working code.', false);
 local_log(root, 'RESULT: FAILED');
+end
+
+function n = local_thinkPredict(msgs, numCtx)
+% Tokens left for reasoning + answer in the fixed context (0 = too little room to think).
+chars = sum(cellfun(@(m) numel(m.content), msgs));
+n = min(10240, numCtx - ceil(chars / 3) - 512);
+if n < 2048
+    n = 0;
+end
+end
+
+function tf = local_wantDoubleCheck(root, E, opts, follow, code, info)
+% Double-check an AI-written answer with an independent solution? Always with  ru sure ; with
+% ru sure auto (default) when this PC writes fast enough that it takes under ~2 minutes.
+tf = false;
+mode = lower(local_setting(root, 'sure', 'auto'));
+if ~opts.sure && (strcmp(mode, 'off') || follow)
+    return
+end
+c = local_stripCode(code);
+if ~isempty(regexp(c, '(?<![\w.])(rand|randn|randi|randperm|rng)\s*\(', 'once')) || isempty(local_outputNumbers(info.output))
+    return                                     % random results or nothing numeric to compare
+end
+if opts.sure || strcmp(mode, 'on')
+    tf = true;
+    return
+end
+tg = local_modelStat(root, E.model, 'tg');
+tf = tg > 0 && (numel(code) / 3 + 40) / tg <= 120;
+end
+
+function [code, info, warnings, how] = local_doubleCheck(root, E, kb, prompt, baseMsgs, code, info, warnings, ...
+    numCtx, how, topics, verbose)
+% Write a second solution independently (the same prompt, which the engine already has in memory,
+% at a higher temperature), run it in a private workspace and compare the printed numbers. When they
+% disagree, the model reviews both (thinking when it can) and writes the corrected script.
+local_busy('ru: double-checking with an independent solution ...');
+[reply, ~, err] = local_llm(root, E, baseMsgs, 0.7, 2048, false, numCtx);
+if ~isempty(err)
+    return
+end
+code2 = local_compactCode(local_arrange(local_sanitize(local_extractCode(reply))), prompt);
+if isempty(strtrim(code2)) || ~isempty(local_precheck(code2, kb))
+    return
+end
+[ok2, out2] = local_runIsolated(root, code2);
+if ~ok2
+    return
+end
+same = local_sameResults(info.output, out2);
+if isnan(same)
+    return
+end
+if same
+    local_log(root, sprintf('DOUBLE-CHECK: an independent solution printed the same results.\nCODE 2:\n%s', code2));
+    how = [how ', confirmed by an independent solution'];
+    return
+end
+local_log(root, sprintf('DOUBLE-CHECK: DISAGREE.\nCODE 2:\n%s\nOUTPUT 2:\n%s', code2, out2));
+local_busy('ru: the two solutions disagree; checking which one is right ...');
+fb = sprintf(['Your script printed:\n%s\n\nAn independent script for the same problem printed:\n%s\n\nIts code:\n' ...
+    '```matlab\n%s\n```\n\nThe results disagree, so at least one script is wrong. Check every formula, unit, ' ...
+    'number and step of both scripts against the PROBLEM, decide which is correct, and reply with the correct ' ...
+    'complete script.'], local_preview(info.output, 1500), local_preview(out2, 1500), code2);
+msgs = [baseMsgs, {local_msg('assistant', ['```matlab' char(10) code char(10) '```']), local_msg('user', fb)}];
+think = any(strcmp(E.caps, 'thinking'));
+nPredict = 2048;
+if think
+    nPredict = local_thinkPredict(msgs, numCtx);
+    think = nPredict > 0;
+    if ~think
+        nPredict = 2048;
+    end
+end
+[reply3, ~, err3] = local_llm(root, E, msgs, 0.3, nPredict, think, numCtx);
+code3 = '';
+if isempty(err3)
+    code3 = local_compactCode(local_arrange(local_sanitize(local_extractCode(reply3))), prompt);
+end
+if isempty(strtrim(code3)) || ~isempty(local_precheck(code3, kb))
+    warnings{end+1} = 'An independent solution printed different numbers: check this result carefully.';
+    return
+end
+[ok3, info3, code3] = local_runCode(root, kb, code3, 'rechecked solution', verbose);
+fb3 = 'failed';
+if ok3
+    [fb3, w3] = local_quality(info3, prompt, code3, 99, 99, true, topics);
+end
+if ~isempty(fb3)
+    % The review failed: restore the first solution (its variables) and warn.
+    [~, info, code] = local_runCode(root, kb, code, 'first solution', false);
+    warnings{end+1} = 'An independent solution printed different numbers: check this result carefully.';
+    return
+end
+agreeFirst = isequal(local_sameResults(info.output, info3.output), true);
+agreeSecond = isequal(local_sameResults(out2, info3.output), true);
+code = code3;
+info = info3;
+warnings = w3;
+if agreeFirst
+    how = [how ', confirmed after a second opinion'];
+elseif agreeSecond
+    how = [how ', corrected by an independent solution'];
+    warnings{end+1} = 'ru corrected its first solution: an independent solution disagreed, and the review agreed with it.';
+else
+    how = [how ', re-derived after two solutions disagreed'];
+    warnings{end+1} = 'Two independent solutions disagreed; this is the re-derived one. Check the result carefully.';
+end
+end
+
+function [ok, out] = local_runIsolated(root, code)
+% Run a script in a private workspace (not the user's), printing nothing; new figures are closed.
+ok = false;
+out = '';
+runDir = local_workDir(root, 'run');
+if ~local_onPath(runDir)
+    addpath(runDir, '-end');
+end
+name = sprintf('ru_check_%s_%03d', datestr(now, 'HHMMSSFFF'), randi(999));
+file = fullfile(runDir, [name '.m']);
+try
+    local_writeText(file, [code char(10)]);
+    rehash;
+catch
+    return
+end
+figs = local_figures();
+try
+    out = local_evalPrivate(name);
+    ok = true;
+catch err
+    out = err.message;
+end
+local_closeNewFigures(figs);
+try
+    delete(file);
+catch
+end
+end
+
+function ru__out = local_evalPrivate(ru__name)
+% The script runs in this function's own workspace.
+ru__out = evalc(ru__name);
+end
+
+function r = local_sameResults(o1, o2)
+% true when the numbers printed by one output are (nearly all) printed by the other, false when not,
+% NaN when there is nothing to compare. The output with fewer numbers is looked up in the other one.
+[v1, d1] = local_outputNumbers(o1);
+[v2, d2] = local_outputNumbers(o2);
+r = NaN;
+if isempty(v1) || isempty(v2)
+    return
+end
+if numel(v1) > numel(v2)
+    [v1, v2] = deal(v2, v1);
+    [d1, d2] = deal(d2, d1);
+end
+hit = 0;
+for k = 1:numel(v1)
+    tol = max(max(2e-3 * abs(v1(k)), 0.6 * 10^(-d1(k))), 0.6 * 10.^(-d2) + 2e-3 * abs(v2));
+    if any(abs(v2 - v1(k)) <= max(tol, 1e-12))
+        hit = hit + 1;
+    end
+end
+r = hit >= 0.8 * numel(v1);
+end
+
+function [v, dec] = local_outputNumbers(out)
+% Numbers printed by a script (with how many decimals they were printed); MATLAB's common scale
+% factor ("1.0e+03 *") is applied; small whole numbers (labels, counters) are left out.
+v = zeros(1, 0);
+dec = zeros(1, 0);
+if isempty(out)
+    return
+end
+lines = regexp(strrep(out, char(13), ''), '\n', 'split');
+scale = 0;
+for i = 1:numel(lines)
+    L = lines{i};
+    sc = regexp(L, '^\s*1\.0+e([+-]\d+)\s*\*\s*$', 'tokens', 'once');
+    if ~isempty(sc)
+        scale = str2double(sc{1});
+        continue
+    end
+    if isempty(strtrim(L)) && scale ~= 0 && i > 1 && ~isempty(strtrim(lines{i-1})) && ...
+            isempty(regexp(lines{i-1}, 'e[+-]\d+\s*\*', 'once'))
+        scale = 0;                                   % end of the scaled block
+        continue
+    end
+    tok = regexp(L, '(?<![A-Za-z_\d.])[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?', 'match');
+    for k = 1:numel(tok)
+        x = str2double(tok{k});
+        if isnan(x) || isinf(x)
+            continue
+        end
+        m = regexp(tok{k}, '\.(\d*)', 'tokens', 'once');
+        dd = 0;
+        if ~isempty(m)
+            dd = numel(m{1});
+        end
+        ex = regexp(tok{k}, '[eE]([-+]?\d+)', 'tokens', 'once');
+        if ~isempty(ex)
+            dd = dd - str2double(ex{1});
+        end
+        if scale ~= 0
+            x = x * 10^scale;
+            dd = dd - scale;
+        end
+        if isempty(m) && isempty(ex) && abs(x) <= 10 && scale == 0
+            continue
+        end
+        v(end+1) = x; %#ok<AGROW>
+        dec(end+1) = dd; %#ok<AGROW>
+    end
+end
 end
 
 function tf = local_isLoaded(E)
@@ -1059,6 +1302,16 @@ if isempty(strtrim(out)) && ~hasPlot
         'assignment or print it with fprintf (value and unit), and print the iteration table when iterations are asked for.'];
     return
 end
+missingParts = local_missingParts(prompt, out);
+if ~isempty(missingParts)
+    if attempt < maxAttempts
+        feedback = sprintf(['The output shows no result for part %s. Solve EVERY part of the problem, in order, and ' ...
+            'print each part''s label before its results, e.g. disp(''%s''). Rewrite the complete script.'], ...
+            strjoin(missingParts, ', '), missingParts{1});
+        return
+    end
+    warnings{end+1} = sprintf('The output shows nothing for part %s.', strjoin(missingParts, ', '));
+end
 if ~isempty(regexp(out, '(?<![A-Za-z])(NaN|-?Inf)(?![A-Za-z])', 'once'))
     if attempt < maxAttempts - 1
         feedback = ['The printed results contain NaN or Inf, which means a division by zero, a wrong ' ...
@@ -1098,6 +1351,48 @@ elseif ~isempty(fb)
     warnings{end+1} = local_firstLine(regexprep(fb, '^Your solution ', 'The solution '));
 end
 warnings = [warnings, w];
+end
+
+function miss = local_missingParts(prompt, out)
+% Parts (a), (b), ... that the problem asks for (their text contains a task word) but the output
+% does not label. Parts that only give information ("(a) For bracketing methods, ...") are skipped.
+miss = {};
+[tok, st] = regexp(prompt, '(?<![A-Za-z0-9])\(([a-h])\)', 'tokens', 'start');
+if numel(tok) < 2
+    [tok, st] = regexp(prompt, '(?<![A-Za-z0-9.])([a-h])[.)]\s+(?=[A-Z])', 'tokens', 'start');
+end
+if numel(tok) < 2
+    return
+end
+letters = cellfun(@(t) t{1}, tok);
+if letters(1) ~= 'a'
+    return
+end
+n = 1;
+while n < numel(letters) && letters(n+1) == letters(n) + 1
+    n = n + 1;
+end
+if n < 2
+    return
+end
+task = ['(?<![a-z])(determine|compute|calculate|find|estimate|evaluate|plot|graph|draw|use|using|solve|show|compare|' ...
+    'fit|predict|write|develop|obtain|derive|express|repeat|perform|employ|apply|test|check|verify|integrate|' ...
+    'differentiate|approximate|interpolate|tabulate|list|print|display|explain|discuss|what|how|which|why)(?![a-z])'];
+o = lower(out);
+for k = 1:n
+    if k < numel(st)
+        body = lower(prompt(st(k):st(k+1)-1));
+    else
+        body = lower(prompt(st(k):end));
+    end
+    if isempty(regexp(body, task, 'once'))
+        continue
+    end
+    L = letters(k);
+    if isempty(regexp(o, ['\(' L '\)|(^|\n)\s*' L '[).:]|part\s*' L '(?![a-z])'], 'once'))
+        miss{end+1} = ['(' L ')']; %#ok<AGROW>
+    end
+end
 end
 
 function [feedback, warnings] = local_resultChecks(prompt, topics, code)
@@ -4120,15 +4415,42 @@ d3 = dir(fullfile(libDir, '*.m'));
 stamp = [0, [d1.datenum], [d2.datenum], [d3.datenum]];
 key = sprintf('%s|%d|%d|%d|%.8f', root, numel(d1), numel(d2), numel(d3), max(stamp));
 if isempty(cache) || ~strcmp(cacheKey, key)
-    k = struct();
-    k.topics = local_readTopics(tpDir, d2);
-    k.methodRegex = {};
-    for t = 1:numel(k.topics)
-        k.methodRegex = [k.methodRegex, k.topics(t).methodRegex];
+    % The parsed knowledge base is kept in brain\kb_cache.mat (one file read instead of ~250 on the
+    % pendrive); it is rebuilt when any example, topic, library file or ru.m itself changes.
+    dr = dir(fullfile(root, 'ru.m'));
+    diskKey = sprintf('kb1|%d|%d|%d|%.8f|%d|%d|%.8f', numel(d1), numel(d2), numel(d3), max(stamp), ...
+        sum([0, d1.bytes, d2.bytes, d3.bytes]), sum([0, dr.bytes]), max([0, dr.datenum]));
+    cf = fullfile(local_brain(root), 'kb_cache.mat');
+    k = [];
+    try
+        if exist(cf, 'file') == 2
+            S = load(cf);
+            if isfield(S, 'diskKey') && strcmp(S.diskKey, diskKey) && isfield(S, 'kc') && isstruct(S.kc) && ...
+                    iscell(S.kc.vocabWords) && numel(S.kc.vocabWords) == size(S.kc.W, 2) && ...
+                    numel(S.kc.examples) == numel(d1) && numel(S.kc.vocabWords) > 0
+                k = S.kc;
+                k.vocab = containers.Map(k.vocabWords, num2cell(1:numel(k.vocabWords)));
+            end
+        end
+    catch
+        k = [];
     end
-    k.lib = local_readLib(libDir, d3);
-    k.examples = local_readExamples(exDir, d1, k);
-    k = local_buildIndex(k);
+    if isempty(k)
+        k = struct();
+        k.topics = local_readTopics(tpDir, d2);
+        k.methodRegex = {};
+        for t = 1:numel(k.topics)
+            k.methodRegex = [k.methodRegex, k.topics(t).methodRegex];
+        end
+        k.lib = local_readLib(libDir, d3);
+        k.examples = local_readExamples(exDir, d1, k);
+        k = local_buildIndex(k);
+        try
+            kc = rmfield(k, 'vocab');               % the map is rebuilt from vocabWords (portable)
+            save(cf, 'kc', 'diskKey', '-v7');
+        catch
+        end
+    end
     cache = k;
     cacheKey = key;
 end
@@ -4319,45 +4641,38 @@ end
 end
 
 function kb = local_buildIndex(kb)
+% TF-IDF index of the solved examples (title and keywords count twice), built in one vectorized pass.
 N = numel(kb.examples);
-kb.vocab = containers.Map('KeyType', 'char', 'ValueType', 'double');
-rows = zeros(1, 0);
-cols = zeros(1, 0);
-vals = zeros(1, 0);
-df = zeros(1, 0);
+parts = cell(1, N);
+owner = cell(1, N);
 for i = 1:N
     e = kb.examples(i);
     kw = strjoin(e.keywords, ' ');
     t = [local_tokens(e.title), local_tokens(e.title), local_tokens(kw), local_tokens(kw), local_tokens(e.problem)];
-    if isempty(t)
-        continue
-    end
-    [u, ~, j] = unique(t);
-    cnt = accumarray(j(:), 1)';
-    for m = 1:numel(u)
-        if isKey(kb.vocab, u{m})
-            c = kb.vocab(u{m});
-        else
-            c = double(kb.vocab.Count) + 1;
-            kb.vocab(u{m}) = c;
-            df(c) = 0;
-        end
-        df(c) = df(c) + 1;
-        rows(end+1) = i; %#ok<AGROW>
-        cols(end+1) = c; %#ok<AGROW>
-        vals(end+1) = 1 + log(cnt(m)); %#ok<AGROW>
-    end
+    parts{i} = t(:)';
+    owner{i} = i * ones(1, numel(t));
 end
-V = double(kb.vocab.Count);
-kb.idf = log((N + 1) ./ (df + 1)) + 1;
-if N == 0 || V == 0
-    kb.W = sparse(N, max(V, 1));
+allTok = [parts{:}];
+allOwner = [owner{:}];
+if N == 0 || isempty(allTok)
+    kb.vocab = containers.Map('KeyType', 'char', 'ValueType', 'double');
+    kb.vocabWords = {};
+    kb.idf = zeros(1, 0);
+    kb.W = sparse(N, 1);
     return
 end
-W = sparse(rows, cols, vals .* kb.idf(cols), N, V);
+[words, ~, j] = unique(allTok);
+V = numel(words);
+C = sparse(allOwner(:), j(:), 1, N, V);                 % term counts per example
+[r, c, cnt] = find(C);
+df = full(sum(C > 0, 1));
+kb.idf = log((N + 1) ./ (df + 1)) + 1;
+W = sparse(r, c, (1 + log(cnt(:))) .* kb.idf(c(:))', N, V);
 nrm = full(sqrt(sum(W.^2, 2)));
 nrm(nrm == 0) = 1;
 kb.W = spdiags(1 ./ nrm, 0, N, N) * W;
+kb.vocabWords = words(:)';
+kb.vocab = containers.Map(kb.vocabWords, num2cell(1:V));
 end
 
 function U = local_userFiles(root)
@@ -5319,7 +5634,7 @@ if nargin < 4
     end
     return
 end
-e = struct('name', model, 'failFree', 0, 'needGB', 0, 'pp', 0, 'tg', 0, 'load', 0);
+e = struct('name', model, 'failFree', 0, 'needGB', 0, 'pp', 0, 'tg', 0, 'load', 0, 'coldLoad', 0);
 if idx > 0
     old = P.models(idx);
     f = fieldnames(e);
@@ -5945,6 +6260,7 @@ if st.tg > 0 && st.genN >= 20
 end
 if st.load > 1
     local_modelStat(root, E.model, 'load', st.load);
+    local_modelStat(root, E.model, 'coldLoad', max(st.load, local_modelStat(root, E.model, 'coldLoad')));
 end
 end
 
@@ -6243,6 +6559,14 @@ for k = 1:numel(P)
         fprintf(' | here it reads %.0f and writes %.1f tokens/s', pp, tg);
     end
     fprintf('\n');
+    cold = local_modelStat(root, P(k).name, 'coldLoad');
+    if cold > 0
+        fprintf('  first load here: %.0f s', cold);
+        if cold > 150
+            fprintf(' - slow: plug the pendrive into a USB 3 port (blue) or use a faster drive');
+        end
+        fprintf('\n');
+    end
 end
 hosts = local_hosts(root);
 for k = 1:numel(hosts)
@@ -6298,7 +6622,20 @@ else
         fprintf('Image model     : %s (%s)\n', M{k}, why);
     end
 end
+fprintf('Double-check    : %s  (ru sure auto | on | off; ru sure <problem> for one problem)\n', ...
+    local_setting(root, 'sure', 'auto'));
 fprintf('\n');
+% ru status is usually the first command: load the model now, while the user reads.
+try
+    E = local_engine(root, false, 'text');
+    local_busy('');
+    if ~isempty(E.model) && local_isLocalHost(E.host) && ~local_isLoaded(E)
+        local_warmup(root, E, local_systemStatic(root, env, kb));
+        fprintf('[ru] %s is loading into memory in the background; start working.\n\n', E.model);
+    end
+catch
+    local_busy('');
+end
 end
 
 function local_settingCommand(root, key, value)
@@ -6320,6 +6657,24 @@ if strcmp(key, 'verbose')
     else
         fprintf('[ru] verbose off: only the MATLAB code and its output are shown.\n');
     end
+    return
+end
+if strcmp(key, 'sure')
+    if isempty(value)
+        fprintf(['[ru] sure: %s  (ru sure auto | on | off)\n' ...
+            '[ru] A second, independent solution checks every AI-written answer (auto: when it takes under ~2 min here).\n'], ...
+            local_setting(root, 'sure', 'auto'));
+        return
+    end
+    v = lower(value);
+    if ~any(strcmp(v, {'auto', 'on', 'off'}))
+        fprintf(2, '[ru] Use: ru sure auto (recommended) | ru sure on (always) | ru sure off (never)\n');
+        return
+    end
+    local_setSetting(root, 'sure', v);
+    msg = struct('auto', 'when the second solution takes under ~2 minutes on the PC', 'on', 'always (slower)', ...
+        'off', 'never (only for  ru sure <problem>)');
+    fprintf('[ru] sure %s: AI-written answers are double-checked by an independent solution %s.\n', v, msg.(v));
     return
 end
 if strcmp(key, 'gpu')

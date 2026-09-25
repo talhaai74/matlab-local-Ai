@@ -123,6 +123,12 @@ ru looks at each PC by itself and remembers what it learned in
   4th generation and newer, AMD Ryzen); on older or 2-core processors checking
   guesses would cost more than it saves, so it stays off. If it ever fails on a
   PC, ru switches it off there and asks again. `ru status` shows the choice.
+* **Fast start of ru itself.** The knowledge base (156 solved examples, 12 topics,
+  67 library functions) is kept ready in `brain\kb_cache.mat`: one file read instead
+  of about 250 small ones on the pendrive (rebuilt automatically when anything
+  changes). `ru status`, usually the first command, also starts loading the model in
+  the background, and shows how long the first load took on that PC (slow: use a
+  blue USB 3 port).
 * **Short prompts.** On a processor, reading the prompt takes most of the time.
   ru sends the full documentation only of the library functions the problem needs
   (the methods it names and those the closest solved examples use), about a
@@ -187,6 +193,8 @@ only when you connect to it with `ru host <IP>`).
 | `ru fix [note]` | find the last error in *your* Command Window work and fix it |
 | `ru again [hint]` | solve the last problem again with another approach |
 | `ru think <problem>` | step-by-step reasoning mode (slower; qwen3.5 models) |
+| `ru sure <problem>` | solve, then check the answer with an independent second solution |
+| `ru sure auto \| on \| off` | double-check AI answers automatically: auto (default) when it takes under ~2 min on the PC |
 | `ru ai <problem>` | skip the stored verified solutions and ask the AI |
 | `ru history [n]` / `ru new` | show / clear the conversation memory |
 | `ru remember <rule>` / `ru rules` | permanent rules, e.g. `ru remember my student ID is 1904032` |
@@ -219,7 +227,17 @@ that contain them type just `ru` and paste into the box.
 3. **Everything is executed.** The script runs in MATLAB; errors go back to the AI
    with targeted hints (up to 4 attempts; when it repeats an error it restarts
    without the example that misled it).
-4. **Silent checks before accepting a result** (ru does them itself; the code
+4. **Every part is answered.** When the problem has parts (a), (b), (c) ... that ask for
+   something, the output must show each of them; a missing part goes back to the AI.
+5. **Thinking when stuck.** When two attempts fail, the third one uses qwen3.5's
+   step-by-step reasoning (same context, so the model is not reloaded).
+6. **Independent double-check** (`ru sure`; automatic when the PC is fast enough to
+   do it in under ~2 minutes). A second solution is written from scratch, run in a
+   private workspace (your variables are not touched) and its numbers are compared
+   with the first. If they disagree, the AI reviews both, reasoning step by step,
+   and the corrected script is used, with a note; a problem with random numbers is
+   not double-checked.
+7. **Silent checks before accepting a result** (ru does them itself; the code
    stays short and nothing extra is printed):
    * code that calls functions which do not exist on this computer is rejected
      (catches invented functions and missing toolboxes);
