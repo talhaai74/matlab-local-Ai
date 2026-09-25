@@ -8,10 +8,10 @@ rem  Keep this window open while you use ru; close it to free the memory.
 rem  Everything comes from this folder: nothing installed on the PC is used.
 rem ============================================================================
 set "RU_DIR=%~dp0"
-set "OLLAMA_EXE=%RU_DIR%ollama\ollama.exe"
-if exist "%OLLAMA_EXE%" goto found
+set "RU_EXE=%RU_DIR%ollama\ollama.exe"
+if exist "%RU_EXE%" goto found
 echo The AI engine is not in this folder:
-echo   "%OLLAMA_EXE%"
+echo   "%RU_EXE%"
 echo Run setup_ru.bat once on a PC with internet; it puts the engine and the models here.
 pause
 exit /b 1
@@ -51,7 +51,7 @@ set "OLLAMA_LOAD_TIMEOUT=30m"
 set "OLLAMA_MAX_LOADED_MODELS=1"
 set "OLLAMA_NUM_PARALLEL=1"
 
-echo Starting the ru engine: "%OLLAMA_EXE%"
+echo Starting the ru engine: "%RU_EXE%"
 echo Models folder: "%OLLAMA_MODELS%"
 echo Keep this window open while you use ru in MATLAB.
-"%OLLAMA_EXE%" serve
+"%RU_EXE%" serve

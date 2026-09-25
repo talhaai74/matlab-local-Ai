@@ -9,7 +9,7 @@ rem  After that the folder works offline on any Windows 10/11 PC with MATLAB, fr
 rem  any drive letter or folder. Copy the WHOLE folder to move it.
 rem ============================================================================
 set "RU_DIR=%~dp0"
-set "OLLAMA_DIR=%RU_DIR%ollama"
+set "RU_OLLAMA=%RU_DIR%ollama"
 cd /d "%RU_DIR%"
 if not exist "%RU_DIR%ru.m" goto notextracted
 echo "%RU_DIR%" | findstr /i /l /c:"AppData\Local\Temp" >nul
@@ -28,7 +28,7 @@ set "USERPROFILE=%RU_DIR%brain\home"
 set "HOME=%RU_DIR%brain\home"
 set "TMP=%RU_DIR%brain\tmp"
 set "TEMP=%RU_DIR%brain\tmp"
-set "PATH=%OLLAMA_DIR%;%OLLAMA_DIR%\lib\ollama;%SystemRoot%\System32;%SystemRoot%;%SystemRoot%\System32\Wbem;%SystemRoot%\System32\WindowsPowerShell\v1.0"
+set "PATH=%RU_OLLAMA%;%RU_OLLAMA%\lib\ollama;%SystemRoot%\System32;%SystemRoot%;%SystemRoot%\System32\Wbem;%SystemRoot%\System32\WindowsPowerShell\v1.0"
 set "OLLAMA_MODELS=%RU_DIR%model"
 set "OLLAMA_HOST=127.0.0.1:11435"
 set "OLLAMA_NOPRUNE=1"
@@ -50,32 +50,47 @@ if /i "!FS!"=="FAT32" (
 )
 
 rem ---- 1. portable Ollama ----------------------------------------------------
-if exist "%OLLAMA_DIR%\ollama.exe" if exist "%OLLAMA_DIR%\lib\ollama" (
-    echo Portable Ollama already present: %OLLAMA_DIR%\ollama.exe
+if exist "%RU_OLLAMA%\ollama.exe" if exist "%RU_OLLAMA%\lib\ollama" (
+    echo Portable Ollama already present: %RU_OLLAMA%\ollama.exe
     goto models
 )
+if not exist "%RU_OLLAMA%" mkdir "%RU_OLLAMA%"
+rem A zip downloaded earlier (in this folder or up to two folders above it) is used instead of downloading again.
+set "ZIP="
+set "OWNZIP=1"
+for %%Z in ("%RU_OLLAMA%\ollama-windows-amd64.zip" "%RU_DIR%ollama-windows-amd64.zip" "%RU_DIR%..\ollama-windows-amd64.zip" "%RU_DIR%..\..\ollama-windows-amd64.zip") do (
+    if not defined ZIP if exist "%%~fZ" set "ZIP=%%~fZ"
+)
+if defined ZIP (
+    if /i not "!ZIP!"=="%RU_OLLAMA%\ollama-windows-amd64.zip" set "OWNZIP="
+    echo Using the Ollama zip already downloaded: !ZIP!
+    goto unpack
+)
 echo.
-echo Downloading the portable Ollama for Windows ^(about 2 GB; needs about 6 GB free while unpacking^)...
-if not exist "%OLLAMA_DIR%" mkdir "%OLLAMA_DIR%"
-set "ZIP=%OLLAMA_DIR%\ollama-windows-amd64.zip"
+echo Downloading the portable Ollama for Windows ^(about 1.5 GB; needs about 6 GB free while unpacking^)...
+set "ZIP=%RU_OLLAMA%\ollama-windows-amd64.zip"
 curl.exe -L --fail -C - -o "%ZIP%" "https://ollama.com/download/ollama-windows-amd64.zip"
 if errorlevel 1 curl.exe -L --fail -o "%ZIP%" "https://github.com/ollama/ollama/releases/latest/download/ollama-windows-amd64.zip"
 if errorlevel 1 (
     echo Download failed. Check the internet connection and run setup_ru.bat again, or download
     echo ollama-windows-amd64.zip from https://github.com/ollama/ollama/releases and unzip it into
-    echo "%OLLAMA_DIR%".
+    echo "%RU_OLLAMA%".
     pause
     exit /b 1
 )
-echo Unpacking...
-tar -xf "%ZIP%" -C "%OLLAMA_DIR%"
-if errorlevel 1 powershell -NoProfile -Command "Expand-Archive -Force '%ZIP%' '%OLLAMA_DIR%'"
-if not exist "%OLLAMA_DIR%\ollama.exe" (
-    echo Could not unpack Ollama ^(is the drive full?^). Unzip "%ZIP%" into that folder by hand.
-    pause
-    exit /b 1
-)
-del "%ZIP%"
+:unpack
+echo Unpacking into %RU_OLLAMA% ...
+tar -xf "%ZIP%" -C "%RU_OLLAMA%"
+if errorlevel 1 powershell -NoProfile -Command "Expand-Archive -Force '%ZIP%' '%RU_OLLAMA%'"
+if not exist "%RU_OLLAMA%\ollama.exe" goto unpackfailed
+if not exist "%RU_OLLAMA%\lib\ollama" goto unpackfailed
+if defined OWNZIP del "%ZIP%"
+goto models
+:unpackfailed
+echo Could not unpack "%ZIP%" ^(damaged download, or the drive is full^).
+echo Delete that zip file and run setup_ru.bat again to download it again.
+pause
+exit /b 1
 
 :models
 rem ---- 2. models ---------------------------------------------------------------
@@ -94,7 +109,7 @@ set /p "CHOICE=> "
 rem An engine that is already running (ru, start_ru.bat, another copy of ru) would receive the
 rem downloads into ITS model folder, so stop it first.
 call :stopengine
-start "ru setup engine" /min "%OLLAMA_DIR%\ollama.exe" serve
+start "ru setup engine" /min "%RU_OLLAMA%\ollama.exe" serve
 echo Waiting for the engine...
 set /a TRIES=0
 :waitengine
@@ -128,14 +143,14 @@ for %%C in (!CHOICE!) do (
     if defined M (
         echo.
         echo Downloading !M! into %OLLAMA_MODELS% ...
-        "%OLLAMA_DIR%\ollama.exe" pull !M!
+        "%RU_OLLAMA%\ollama.exe" pull !M!
         if errorlevel 1 echo Download of !M! failed - run setup_ru.bat again to resume it.
     )
 )
 
 echo.
 echo Models in %OLLAMA_MODELS%:
-"%OLLAMA_DIR%\ollama.exe" list
+"%RU_OLLAMA%\ollama.exe" list
 call :stopengine
 echo.
 echo Done. Everything ru needs is in %RU_DIR%
