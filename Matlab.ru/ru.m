@@ -18,18 +18,18 @@ function varargout = ru(varargin)
 %   ru last               show the last code;  ru save <name>  save it as <name>.m
 %   ru status             this PC (processor, memory, graphics), AI engine, models, speed
 %   ru start | ru stop    start / stop the AI engine (Ollama) of this pendrive
-%   ru model [name|auto]  choose the model for THIS PC, e.g. ru model qwen3.5:9b (or ru model 9b);
-%                         auto (default) = the best small model that fits; ru vision: for ru img
+%   ru model [name|auto]  default on every PC: the strongest installed model (qwen3.5:9b);
+%                         a smaller one only when you choose it for this PC, e.g.
+%                         ru model qwen2.5-coder:3b (or ru model coder); ru model auto = back
 %   ru gpu [auto|on|off]  graphics card use (auto: dedicated cards yes, integrated no)
 %   ru verbose [on|off]   off (default): only the code and MATLAB's output are shown
 %   ru prep               free memory: close your browsers, chat and music programs
 %                         (runs ru_prep.bat; asks nothing, keeps the ru engine)
 %   ru list | ru test | ru help
 %
-%   ru adapts to each PC by itself: it measures the free memory, uses the strongest
-%   model that fits, puts the model on the graphics card and the processor together
-%   when there is a usable card, and falls back to the processor when a graphics
-%   driver fails.
+%   ru adapts to each PC by itself: it uses the strongest installed model, puts it on
+%   the graphics card and the processor together when there is a usable card, and
+%   falls back to the processor when a graphics driver fails.
 %
 %   Long problems, or text with quotes, commas or several lines: type just  ru
 %   and paste the text into the box, or call  ru('...')  with the text in quotes.
@@ -4311,7 +4311,8 @@ end
 end
 
 function [k, why] = local_chooseModel(root, H, M, S, infos, want, purpose, exclude)
-% Quality first: the strongest model (by local_modelScore) that fits the free memory of this PC.
+% Default on every PC: the strongest installed model (qwen3.5:9b when it is on the pendrive),
+% whatever the free memory. Another model only when chosen with  ru model <name>  on this PC.
 persistent noted
 if isempty(noted)
     noted = {};
@@ -4333,9 +4334,7 @@ if ~isempty(want) && ~strcmpi(want, 'auto')
             return
         end
     end
-    if any(cellfun(@(e) local_sameModel(want, e), exclude))
-        local_err('[ru] %s does not fit in the free memory now; using a smaller model for this question.\n', want);
-    elseif ~any(strcmp(noted, ['want:' want]))
+    if ~any(strcmp(noted, ['want:' want]))
         noted{end+1} = ['want:' want];
         md = local_modelsDir(root);
         if isempty(md)
@@ -4348,70 +4347,40 @@ if ~isempty(want) && ~strcmpi(want, 'auto')
 end
 cand = find(ok);
 if isempty(cand)
-    return
-end
-if strcmpi(want, 'auto') && ~needVision
-    % Automatic choice uses the small, fast models only; a big model (e.g. qwen3.5:9b) is used only
-    % when chosen with  ru model <name>. The old ru_engine copy is never chosen automatically.
-    small = cand(arrayfun(@(i) ~local_isBigModel(M{i}, S(i)) && isempty(regexp(lower(M{i}), '^ru_engine', 'once')), cand));
-    if ~isempty(small)
-        cand = small;
+    if needVision
+        local_engineProblem('reading pictures needs a vision model such as qwen3.5:9b; none is installed');
     end
+    return
 end
 score = zeros(1, numel(cand));
 for j = 1:numel(cand)
     score(j) = local_modelScore(M{cand(j)}, purpose);
 end
 [~, o] = sort(score, 'descend');
-cand = cand(o);
-mem = local_memBudget(root, H);
-need = zeros(1, numel(M));
-for i = cand
-    need(i) = max(local_memNeed(M{i}, S(i), min(16384, infos{i}.ctx)), local_modelStat(root, M{i}, 'needGB'));
-end
-for i = cand
-    remote = ~local_isLocalHost(H{i});
-    loaded = any(strcmp(mem.loaded, M{i}));
-    if remote || loaded || isnan(mem.avail) || S(i) == 0
-        k = i;
-        why = 'automatic, already in memory';
-        if remote
-            why = 'on another computer (ru host)';
-        elseif isnan(mem.avail) || S(i) == 0
-            why = 'strongest installed model';
-        end
-        break
-    end
-    failedAt = local_modelStat(root, M{i}, 'failFree');
-    if need(i) <= mem.avail && ~(failedAt > 0 && mem.avail <= failedAt + 0.5)
-        k = i;
-        why = sprintf('automatic: the best model that fits, needs ~%.1f GB, %.1f GB free', need(i), mem.avail);
-        break
-    end
-end
-if k == 0
-    [~, j] = min(S(cand));
-    k = cand(j);
-    if needVision && ~isnan(mem.total) && need(k) > mem.total - 1
-        local_engineProblem(sprintf(['reading pictures needs %s (~%.1f GB memory), but this PC has only ' ...
-            '%.1f GB'], M{k}, need(k), mem.total));
-        k = 0;
-        return
-    end
-    why = sprintf('smallest model; only %.1f GB memory is free', mem.avail);
-    if ~any(strcmp(noted, 'lowmem'))
-        noted{end+1} = 'lowmem';
-        local_err('[ru] Only %.1f GB memory is free; using %s. Close other programs for faster, better answers.\n', ...
-            mem.avail, M{k});
-    end
+k = cand(o(1));
+why = 'default: the strongest installed model';
+if ~local_isLocalHost(H{k})
+    why = 'on another computer (ru host)';
     return
 end
-best = cand(1);
-if k ~= best && local_isLocalHost(H{best}) && ~isnan(mem.total) && need(best) > mem.avail ...
-        && need(best) <= mem.total - 2 && ~any(strcmp(noted, ['close:' M{best}]))
-    noted{end+1} = ['close:' M{best}];
-    local_err('[ru] Close other programs to let ru use the stronger %s (needs ~%.1f GB, %.1f GB free now).\n', ...
-        M{best}, need(best), mem.avail);
+% Only a note when memory looks too small: the model is still used (ru model <small> to change).
+mem = local_memBudget(root, H);
+need = max(local_memNeed(M{k}, S(k), min(16384, infos{k}.ctx)), local_modelStat(root, M{k}, 'needGB'));
+if ~isnan(mem.avail) && S(k) > 0 && need > mem.avail && ~any(strcmp(mem.loaded, M{k})) ...
+        && ~any(strcmp(noted, ['mem:' M{k}]))
+    noted{end+1} = ['mem:' M{k}];
+    small = '';
+    others = cand(o(2:end));
+    if ~isempty(others)
+        [~, j] = min(S(others));
+        small = M{others(j)};
+    end
+    local_err('[ru] %s needs ~%.1f GB but only %.1f GB is free here: it may be slow. ru prep frees memory', ...
+        M{k}, need, mem.avail);
+    if ~isempty(small)
+        local_err('; the small model: ru model %s', small);
+    end
+    local_err('\n');
 end
 end
 
@@ -4487,16 +4456,6 @@ end
 
 function tf = local_sameModel(a, b)
 tf = strcmpi(regexprep(a, ':latest$', ''), regexprep(b, ':latest$', ''));
-end
-
-function tf = local_isBigModel(name, bytes)
-% 6 billion parameters or more (qwen3.5:9b, qwen2.5-coder:7b, ...): only used when chosen by name.
-tok = regexp(lower(name), '(\d+(?:\.\d+)?)b(?![a-z])', 'tokens', 'once');
-if ~isempty(tok)
-    tf = str2double(tok{1}) >= 6;
-else
-    tf = bytes > 5e9;
-end
 end
 
 function v = local_modelChoice(root, key)
@@ -5222,19 +5181,13 @@ for tries = 1:3
         detail = [err ' ' local_readTail(logf, logPos)];
     end
     kind = local_errorKind(detail);
-    if strcmp(kind, 'memory') && tries < 3
+    if strcmp(kind, 'memory')
+        % No automatic switch to a smaller model: that happens only with  ru model <name>.
         hw = local_hw(root);
         local_modelStat(root, E.model, 'failFree', hw.ramFree);
         req = regexp(detail, 'requires more \w+ memory \(([\d.]+)\s*GiB\)', 'tokens', 'once');
         if ~isempty(req)
             local_modelStat(root, E.model, 'needGB', str2double(req{1}));
-        end
-        E2 = local_engine(root, false, E.purpose, {E.model});
-        if ~isempty(E2.model) && ~strcmp(E2.model, E.model)
-            local_err('[ru] %s needs more memory than this PC has free now; using %s.\n', E.model, E2.model);
-            E = E2;
-            numCtx = E.ctx;
-            continue
         end
     elseif strcmp(kind, 'crash') && own && ~local_cpuMode(root) && tries < 3
         local_err('[ru] The graphics driver stopped the AI engine; the AI now runs on the processor on this PC.\n');
@@ -5278,7 +5231,8 @@ switch kind
         msg = sprintf(['%s did not finish in time on this PC. Close other programs and try again, or choose ' ...
             'a smaller model: ru model <name>'], E.model);
     case 'memory'
-        msg = sprintf('not enough free memory for %s: close other programs, or choose a smaller model: ru model <name>', E.model);
+        msg = sprintf(['not enough free memory for %s. Free memory with  ru prep  (closes browsers, chat, ...) ' ...
+            'and try again, or use the small model on this PC:  ru model qwen2.5-coder:3b'], E.model);
     case 'down'
         msg = 'the AI engine stopped running. Run: ru start';
     case 'crash'
@@ -5727,13 +5681,9 @@ P = local_profile(root);
 P.(key) = choice;
 local_profile(root, P);
 if strcmp(choice, 'auto')
-    if strcmp(key, 'model')
-        fprintf('[ru] Automatic on this PC: the best small model that fits (a big model such as qwen3.5:9b only when you choose it).\n');
-    else
-        fprintf('[ru] Automatic on this PC: the best vision model that fits.\n');
-    end
+    fprintf('[ru] This PC is back to the default: the strongest installed model (qwen3.5:9b when it is on the pendrive).\n');
 else
-    fprintf('[ru] This PC now uses %s for %s. Other PCs keep their own choice; back to automatic: ru %s auto\n', ...
+    fprintf('[ru] This PC now uses %s for %s. Other PCs keep the default (the strongest model); back to it: ru %s auto\n', ...
         choice, what, key);
 end
 end

@@ -72,12 +72,11 @@ r =
 ru looks at each PC by itself and remembers what it learned in
 `brain\pc_<computer name>.json`. `ru status` shows all of it.
 
-* **Model choice.** ru measures the free memory (RAM, plus the memory of a
-  dedicated graphics card) and uses the best small model that fits
-  (qwen2.5-coder:3b with your pendrive). qwen3.5:9b is used only after
-  `ru model qwen3.5:9b` on that PC (about 9 GB free memory needed; screenshots
-  need it too). If the engine reports "not enough memory", ru switches to a
-  smaller model for that question.
+* **Model choice.** ru always uses the strongest installed model (qwen3.5:9b,
+  about 9 GB free memory for good speed). When the free memory is smaller it
+  warns once; when the engine reports "not enough memory" it stops with the two
+  ways out: `ru prep` (free memory) or `ru model qwen2.5-coder:3b` (small model on
+  this PC). It never switches to a smaller model by itself.
 * **Wrong engine.** An engine left running from another copy of ru (or by
   setup_ru.bat) serves that copy's models; ru notices that this folder's models are
   missing from it and restarts the engine from this folder.
@@ -133,14 +132,13 @@ no settings.
 | qwen2.5-coder:7b | 4.7 GB | 16 GB | no | needs exFAT/NTFS |
 | qwen3.5:9b | 6.6 GB | 16 GB | yes | strongest; needs exFAT/NTFS |
 
-Automatic choice (the default on every PC) uses the best **small** model that fits
-the free memory, e.g. qwen2.5-coder:3b; a big model (qwen3.5:9b, qwen2.5-coder:7b)
-is used only when you choose it: `ru model qwen3.5:9b` (or just `ru model 9b`).
-The choice is kept **for that PC only**, so other PCs stay automatic;
-`ru model auto` goes back. A misspelled name is refused with a suggestion.
-`ru img` needs a vision model and uses qwen3.5:9b when it is the only one
-(`ru vision <name|auto>` to choose). ru also uses models from an Ollama installed
-on the PC.
+**Default on every PC: the strongest installed model** (qwen3.5:9b when it is on
+the pendrive), for problems and for `ru img`, whatever the free memory; if the
+memory looks too small ru says so once but does not switch. A smaller model is
+used only when you choose it: `ru model qwen2.5-coder:3b` (or `ru model coder`).
+That choice is kept **for that PC only**, so other PCs keep using 9b;
+`ru model auto` goes back to 9b. A misspelled name is refused with a suggestion.
+ru also uses models from an Ollama installed on the PC.
 
 ## Commands
 
