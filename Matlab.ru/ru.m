@@ -18,7 +18,8 @@ function varargout = ru(varargin)
 %   ru last               show the last code;  ru save <name>  save it as <name>.m
 %   ru status             this PC (processor, memory, graphics), AI engine, models, speed
 %   ru start | ru stop    start / stop the AI engine (Ollama) of this pendrive
-%   ru model [name|auto]  choose the text model;  ru vision [name|auto]  image model
+%   ru model [name|auto]  choose the model for THIS PC, e.g. ru model qwen3.5:9b (or ru model 9b);
+%                         auto (default) = the best small model that fits; ru vision: for ru img
 %   ru gpu [auto|on|off]  graphics card use (auto: dedicated cards yes, integrated no)
 %   ru verbose [on|off]   off (default): only the code and MATLAB's output are shown
 %   ru prep               free memory: close your browsers, chat and music programs
@@ -90,6 +91,8 @@ switch cmd
             local_busy('');
             if isempty(E.model)
                 local_engineHelp();
+            elseif local_isLoaded(E)
+                fprintf('[ru] Engine ready: %s (%s), already in memory.\n', E.model, E.why);
             else
                 local_warmup(root, E, local_systemStatic(root, local_env(), local_kb(root)));
                 fprintf('[ru] Engine ready: %s (%s). It is loading into memory in the background.\n', E.model, E.why);
@@ -4012,7 +4015,7 @@ key = 'model';
 if strcmp(purpose, 'vision')
     key = 'vision';
 end
-want = local_setting(root, key, 'auto');
+want = local_modelChoice(root, key);
 cached = C.(purpose);
 if ~forceStart && isempty(exclude) && ~isempty(cached)
     names = local_tags(cached.host, 3);
@@ -4024,6 +4027,9 @@ end
 hosts = local_hosts(root);
 pend = local_pendHost();
 customUp = ~strcmp(hosts{1}, pend) && ~isempty(local_tags(hosts{1}, 3));
+if local_ping(pend)
+    local_checkEngineFolder(root);
+end
 if ~local_ping(pend) && (forceStart || ~customUp) ...
         && (forceStart || ~isempty(local_pendriveModels(root)) || ~isempty(local_findOllama(root)))
     local_busy('ru: starting the AI engine ...');
@@ -4060,6 +4066,32 @@ C.(purpose) = E;
 if local_ping(E.host)
     local_engineProblem('');
 end
+end
+
+function local_checkEngineFolder(root)
+% An engine on port 11435 that was started from another folder (another copy of ru, setup_ru.bat)
+% serves that folder's models, so models of THIS pendrive look "not installed". Restart it here.
+persistent done
+if ~isempty(done) && strcmp(done, root)
+    return
+end
+done = root;
+if isempty(local_findOllama(root))
+    return
+end
+P = local_pendriveModels(root);
+if isempty(P)
+    return
+end
+served = local_tags(local_pendHost(), 3);
+mine = {P([P.complete]).name};
+missing = mine(cellfun(@(n) ~any(cellfun(@(m) local_sameModel(n, m), served)), mine));
+if isempty(missing)
+    return
+end
+local_err(['[ru] The running AI engine does not have %s from this folder (it was started from another ' ...
+    'folder); restarting it from %s ...\n'], strjoin(missing, ', '), root);
+local_restartEngine(root, false);
 end
 
 function E = local_emptyEngine(purpose)
@@ -4297,18 +4329,34 @@ if ~isempty(want) && ~strcmpi(want, 'auto')
     for i = 1:numel(M)
         if ok(i) && local_sameModel(want, M{i})
             k = i;
-            why = 'chosen with ru model / ru vision';
+            why = 'chosen for this PC with ru model / ru vision';
             return
         end
     end
-    if ~any(strcmp(noted, ['want:' want]))
+    if any(cellfun(@(e) local_sameModel(want, e), exclude))
+        local_err('[ru] %s does not fit in the free memory now; using a smaller model for this question.\n', want);
+    elseif ~any(strcmp(noted, ['want:' want]))
         noted{end+1} = ['want:' want];
-        local_err('[ru] The chosen model "%s" is not installed here; choosing one automatically.\n', want);
+        md = local_modelsDir(root);
+        if isempty(md)
+            md = fullfile(root, 'model');
+        end
+        local_err(['[ru] %s (chosen with ru model) is not in the running AI engine, which has: %s.\n' ...
+            '[ru] Models are read from %s. Check with  ru status ; download it with setup_ru.bat, or use  ru model auto\n'], ...
+            want, strjoin(M, ', '), md);
     end
 end
 cand = find(ok);
 if isempty(cand)
     return
+end
+if strcmpi(want, 'auto') && ~needVision
+    % Automatic choice uses the small, fast models only; a big model (e.g. qwen3.5:9b) is used only
+    % when chosen with  ru model <name>. The old ru_engine copy is never chosen automatically.
+    small = cand(arrayfun(@(i) ~local_isBigModel(M{i}, S(i)) && isempty(regexp(lower(M{i}), '^ru_engine', 'once')), cand));
+    if ~isempty(small)
+        cand = small;
+    end
 end
 score = zeros(1, numel(cand));
 for j = 1:numel(cand)
@@ -4326,7 +4374,7 @@ for i = cand
     loaded = any(strcmp(mem.loaded, M{i}));
     if remote || loaded || isnan(mem.avail) || S(i) == 0
         k = i;
-        why = 'already in memory';
+        why = 'automatic, already in memory';
         if remote
             why = 'on another computer (ru host)';
         elseif isnan(mem.avail) || S(i) == 0
@@ -4337,7 +4385,7 @@ for i = cand
     failedAt = local_modelStat(root, M{i}, 'failFree');
     if need(i) <= mem.avail && ~(failedAt > 0 && mem.avail <= failedAt + 0.5)
         k = i;
-        why = sprintf('the strongest model that fits: needs ~%.1f GB, %.1f GB free', need(i), mem.avail);
+        why = sprintf('automatic: the best model that fits, needs ~%.1f GB, %.1f GB free', need(i), mem.avail);
         break
     end
 end
@@ -4439,6 +4487,51 @@ end
 
 function tf = local_sameModel(a, b)
 tf = strcmpi(regexprep(a, ':latest$', ''), regexprep(b, ':latest$', ''));
+end
+
+function tf = local_isBigModel(name, bytes)
+% 6 billion parameters or more (qwen3.5:9b, qwen2.5-coder:7b, ...): only used when chosen by name.
+tok = regexp(lower(name), '(\d+(?:\.\d+)?)b(?![a-z])', 'tokens', 'once');
+if ~isempty(tok)
+    tf = str2double(tok{1}) >= 6;
+else
+    tf = bytes > 5e9;
+end
+end
+
+function v = local_modelChoice(root, key)
+% The model chosen for THIS PC with  ru model / ru vision  ('auto' when none was chosen).
+P = local_profile(root);
+v = 'auto';
+if isfield(P, key) && ischar(P.(key)) && ~isempty(strtrim(P.(key)))
+    v = strtrim(P.(key));
+end
+end
+
+function names = local_installedNames(root)
+% Models this ru can use: those of the running engines plus the complete ones on the pendrive.
+[~, names] = local_findModels(local_hosts(root));
+P = local_pendriveModels(root);
+for k = 1:numel(P)
+    if P(k).complete && ~any(cellfun(@(n) local_sameModel(n, P(k).name), names))
+        names{end+1} = P(k).name; %#ok<AGROW>
+    end
+end
+names = unique(names);
+end
+
+function d = local_editDistance(a, b)
+a = lower(a);
+b = lower(b);
+d = 0:numel(b);
+for i = 1:numel(a)
+    prev = d;
+    d(1) = i;
+    for j = 1:numel(b)
+        d(j+1) = min([prev(j+1) + 1, d(j) + 1, prev(j) + (a(i) ~= b(j))]);
+    end
+end
+d = d(end);
 end
 
 function s = local_modelScore(name, purpose)
@@ -4674,7 +4767,8 @@ if ~isempty(cache) && strcmp(cacheFile, f)
     P = cache;
     return
 end
-P = struct('gpuChecked', false, 'cpuOnly', false, 'gpuEnv', struct(), 'gpus', [], 'models', []);
+P = struct('gpuChecked', false, 'cpuOnly', false, 'gpuEnv', struct(), 'gpus', [], 'models', [], ...
+    'model', 'auto', 'vision', 'auto');
 if exist(f, 'file') == 2
     try
         r = jsondecode(local_readText(f));
@@ -4689,6 +4783,12 @@ if exist(f, 'file') == 2
 end
 if ~isstruct(P.gpuEnv)
     P.gpuEnv = struct();
+end
+if ~ischar(P.model) || isempty(P.model)
+    P.model = 'auto';
+end
+if ~ischar(P.vision) || isempty(P.vision)
+    P.vision = 'auto';
 end
 P.gpuChecked = isequal(P.gpuChecked, true) || isequal(P.gpuChecked, 1);
 P.cpuOnly = isequal(P.cpuOnly, true) || isequal(P.cpuOnly, 1);
@@ -5014,6 +5114,11 @@ try
             [~, ~] = system(['powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 11435 -State Listen ' ...
                 '-ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }"']);
         end
+        pause(1);
+        if local_ping(local_pendHost())
+            % Last resort: every ollama.exe of this user (the PID lookup failed, e.g. another Windows language).
+            [~, ~] = system('taskkill /F /T /IM ollama.exe');
+        end
     else
         [~, ~] = system('fuser -k -TERM 11435/tcp > /dev/null 2>&1 || (lsof -ti tcp:11435 | xargs -r kill) > /dev/null 2>&1');
     end
@@ -5039,7 +5144,8 @@ if ~local_ping(local_pendHost())
 end
 local_killEngine();
 if local_ping(local_pendHost())
-    fprintf(2, '[ru] Could not stop it; close the "ru engine" window instead.\n');
+    fprintf(2, ['[ru] Could not stop it. It was probably started as administrator (for example by setup_ru.bat ' ...
+        'run as administrator). Close its window ("ru engine" or "ru setup engine"), or restart the PC.\n']);
 else
     fprintf('[ru] Engine stopped (memory freed). It starts again automatically when needed.\n');
 end
@@ -5485,8 +5591,8 @@ why = local_engineProblem();
 if ~isempty(why)
     fprintf(2, 'Engine problem  : %s\n', why);
 end
-fprintf('Model setting   : text %s, vision %s  (ru model <name|auto>, ru vision <name|auto>)\n', ...
-    local_setting(root, 'model', 'auto'), local_setting(root, 'vision', 'auto'));
+fprintf('Model on this PC: text %s, vision %s  (ru model <name|auto>, ru vision <name|auto>)\n', ...
+    local_modelChoice(root, 'model'), local_modelChoice(root, 'vision'));
 [H, M, S] = local_findModels(hosts);
 if isempty(M)
     fprintf(2, 'ru will use     : nothing yet - run  ru start\n');
@@ -5495,11 +5601,11 @@ else
     for k = 1:numel(M)
         infos{k} = local_modelInfo(H{k}, M{k});
     end
-    [k, why] = local_chooseModel(root, H, M, S, infos, local_setting(root, 'model', 'auto'), 'text', {});
+    [k, why] = local_chooseModel(root, H, M, S, infos, local_modelChoice(root, 'model'), 'text', {});
     if k > 0
         fprintf('Text model      : %s (%s)\n', M{k}, why);
     end
-    [k, why] = local_chooseModel(root, H, M, S, infos, local_setting(root, 'vision', 'auto'), 'vision', {});
+    [k, why] = local_chooseModel(root, H, M, S, infos, local_modelChoice(root, 'vision'), 'vision', {});
     if k == 0
         why = local_engineProblem();
         if isempty(why)
@@ -5560,18 +5666,76 @@ if strcmp(key, 'gpu')
     end
     return
 end
+if any(strcmp(key, {'model', 'vision'}))
+    local_modelCommand(root, key, value);
+    return
+end
 if isempty(value)
-    fprintf('[ru] %s setting: %s\n', key, local_setting(root, settingKey, 'auto'));
-    [~, M] = local_findModels(local_hosts(root));
-    if isempty(M)
-        fprintf('[ru] No engine is running. Start it with: ru start\n');
-    else
-        fprintf('[ru] Installed models: %s\n', strjoin(unique(M), ', '));
-    end
+    fprintf('[ru] %s setting: %s\n', key, local_setting(root, settingKey, ''));
     return
 end
 local_setSetting(root, settingKey, strtrim(value));
 fprintf('[ru] %s set to %s\n', key, strtrim(value));
+end
+
+function local_modelCommand(root, key, value)
+% ru model <name|auto> / ru vision <name|auto>: chosen per PC (other PCs keep their own choice).
+value = regexprep(strtrim(value), '^["'']|["'']$', '');
+names = local_installedNames(root);
+what = 'problems';
+if strcmp(key, 'vision')
+    what = 'pictures (ru img)';
+end
+if isempty(value)
+    fprintf('[ru] Model for %s on this PC: %s\n', what, local_modelChoice(root, key));
+    if isempty(names)
+        fprintf('[ru] No model found (no engine running and none on the pendrive). Check: ru status\n');
+    else
+        fprintf('[ru] Installed models: %s\n', strjoin(names, ', '));
+    end
+    return
+end
+if strcmpi(value, 'auto')
+    choice = 'auto';
+else
+    choice = '';
+    hit = find(cellfun(@(n) local_sameModel(value, n), names), 1);
+    if isempty(hit)
+        % Short forms: "9b" or "coder" when exactly one installed model contains it.
+        part = find(~cellfun(@isempty, strfind(lower(names), lower(value))));
+        if numel(part) == 1
+            hit = part;
+        end
+    end
+    if ~isempty(hit)
+        choice = names{hit};
+    elseif isempty(names)
+        choice = value;
+        fprintf(2, '[ru] Could not check the name (no engine running, no model on the pendrive).\n');
+    else
+        fprintf(2, '[ru] "%s" is not installed. Installed models: %s\n', value, strjoin(names, ', '));
+        dist = cellfun(@(n) local_editDistance(value, regexprep(n, ':latest$', '')), names);
+        [dmin, j] = min(dist);
+        if dmin <= 3
+            fprintf(2, '[ru] Did you mean:  ru %s %s\n', key, names{j});
+        end
+        fprintf(2, '[ru] Nothing changed. To download a model run setup_ru.bat on a PC with internet.\n');
+        return
+    end
+end
+P = local_profile(root);
+P.(key) = choice;
+local_profile(root, P);
+if strcmp(choice, 'auto')
+    if strcmp(key, 'model')
+        fprintf('[ru] Automatic on this PC: the best small model that fits (a big model such as qwen3.5:9b only when you choose it).\n');
+    else
+        fprintf('[ru] Automatic on this PC: the best vision model that fits.\n');
+    end
+else
+    fprintf('[ru] This PC now uses %s for %s. Other PCs keep their own choice; back to automatic: ru %s auto\n', ...
+        choice, what, key);
+end
 end
 
 function v = local_setting(root, key, default)

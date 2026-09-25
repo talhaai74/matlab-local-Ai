@@ -72,13 +72,15 @@ r =
 ru looks at each PC by itself and remembers what it learned in
 `brain\pc_<computer name>.json`. `ru status` shows all of it.
 
-* **Model choice, quality first.** ru measures the free memory (RAM, plus the
-  memory of a dedicated graphics card) and uses the **strongest model that fits**.
-  With your pendrive (qwen3.5:9b and qwen2.5-coder:3b): a PC with about 10 GB free
-  memory or more uses qwen3.5:9b; an 8 GB PC uses qwen2.5-coder:3b (and cannot read
-  screenshots, because only 9b can). If a stronger model would fit after closing
-  programs, ru says so once. If the engine still reports "not enough memory", ru
-  switches to the next model by itself and remembers it for this PC.
+* **Model choice.** ru measures the free memory (RAM, plus the memory of a
+  dedicated graphics card) and uses the best small model that fits
+  (qwen2.5-coder:3b with your pendrive). qwen3.5:9b is used only after
+  `ru model qwen3.5:9b` on that PC (about 9 GB free memory needed; screenshots
+  need it too). If the engine reports "not enough memory", ru switches to a
+  smaller model for that question.
+* **Wrong engine.** An engine left running from another copy of ru (or by
+  setup_ru.bat) serves that copy's models; ru notices that this folder's models are
+  missing from it and restarts the engine from this folder.
 * **Graphics card and processor together.** A dedicated card (NVIDIA through CUDA,
   AMD/other dedicated cards through Vulkan) holds as much of the model as fits;
   the processor runs the rest. This split is automatic.
@@ -131,10 +133,14 @@ no settings.
 | qwen2.5-coder:7b | 4.7 GB | 16 GB | no | needs exFAT/NTFS |
 | qwen3.5:9b | 6.6 GB | 16 GB | yes | strongest; needs exFAT/NTFS |
 
-`ru` picks the best installed model automatically. Force one with
-`ru model qwen2.5-coder:3b` (text) or `ru vision qwen3.5:4b` (images);
-`ru model auto` goes back to automatic. It also uses models from an Ollama
-installed on the PC.
+Automatic choice (the default on every PC) uses the best **small** model that fits
+the free memory, e.g. qwen2.5-coder:3b; a big model (qwen3.5:9b, qwen2.5-coder:7b)
+is used only when you choose it: `ru model qwen3.5:9b` (or just `ru model 9b`).
+The choice is kept **for that PC only**, so other PCs stay automatic;
+`ru model auto` goes back. A misspelled name is refused with a suggestion.
+`ru img` needs a vision model and uses qwen3.5:9b when it is the only one
+(`ru vision <name|auto>` to choose). ru also uses models from an Ollama installed
+on the PC.
 
 ## Commands
 
@@ -252,6 +258,7 @@ Then run `ru test`. Examples with `% SELFTEST: skip` (they need data files) are 
 | Symptom | Fix |
 |---|---|
 | `No AI model is available` | `ru status`; run `setup_ru.bat` on a PC with internet |
+| `... is not in the running AI engine` | `ru status` shows the models folder ru reads and what is in it; download the model with `setup_ru.bat` into **this** folder |
 | `model ... INCOMPLETE - missing file(s)` | copy the missing `sha256-...` blob into `model\blobs` or re-run `setup_ru.bat` |
 | very slow / timeout | `ru status` shows the speed on this PC; close other programs; `ru model qwen2.5-coder:3b` |
 | wrong or garbage answers on one PC only | `ru gpu off` (a bad graphics driver); `ru gpu auto` to try the card again |

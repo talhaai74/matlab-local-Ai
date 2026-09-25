@@ -62,9 +62,24 @@ echo Type one or more numbers separated by spaces (default 1 2):
 set "CHOICE=1 2"
 set /p "CHOICE=> "
 
+rem An engine that is already running (ru, start_ru.bat, another copy of ru) would receive the
+rem downloads into ITS model folder, so stop it first.
+call :stopengine
 start "ru setup engine" /min "%OLLAMA_DIR%\ollama.exe" serve
 echo Waiting for the engine...
-timeout /t 5 /nobreak >nul
+set /a TRIES=0
+:waitengine
+curl.exe -s -m 2 http://127.0.0.1:11435/api/version >nul 2>&1
+if not errorlevel 1 goto engineok
+set /a TRIES+=1
+if !TRIES! GEQ 60 (
+    echo The engine did not start. Close any "ru engine" window and run setup_ru.bat again.
+    pause
+    exit /b 1
+)
+ping -n 2 127.0.0.1 >nul
+goto waitengine
+:engineok
 
 for %%C in (!CHOICE!) do (
     set "M="
@@ -82,8 +97,17 @@ for %%C in (!CHOICE!) do (
 )
 
 echo.
+echo Models in %OLLAMA_MODELS%:
 "%OLLAMA_DIR%\ollama.exe" list
-powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 11435 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }" >nul 2>&1
+call :stopengine
 echo.
 echo Done. In MATLAB on any PC:   cd %RU_DIR%   then   ru status   and   ru help
+echo ru chooses a small model automatically; for the big one type  ru model qwen3.5:9b
 pause
+exit /b 0
+
+:stopengine
+rem Ends the engine on port 11435 together with its model processes.
+for /f "tokens=5" %%P in ('netstat -ano -p tcp ^| findstr /r /c:"127\.0\.0\.1:11435 .*0\.0\.0\.0:0"') do taskkill /F /T /PID %%P >nul 2>&1
+ping -n 3 127.0.0.1 >nul
+exit /b 0
