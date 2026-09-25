@@ -30,10 +30,10 @@ r =
 * **No AI can guarantee zero mistakes.** `ru` reduces them with checks that run
   real code (see *How ru avoids wrong answers*), but a small offline model still
   makes errors. For important answers, read the printed equations and checks.
-* The model you run decides how strong ru is. `qwen2.5-coder:3b` (the model
-  already on your pendrive) solves standard CE206 problems when a similar solved
-  example exists, but fails on some problems that need restructuring.
-  **`qwen3.5:4b` is recommended**: it also reads screenshots. `setup_ru.bat` downloads it.
+* The model you run decides how strong ru is. **qwen3.5:9b** (the default) is the
+  strongest and also reads screenshots. `qwen2.5-coder:3b` is small and fast; it
+  solves standard CE206 problems when a similar solved example exists, but fails
+  on some problems that need restructuring. `setup_ru.bat` downloads both.
 * Screenshots of **figures** (trusses, beams) are described in words by the vision
   model and can be wrong: `ru img` always shows the text it read and lets you fix
   it before solving.
@@ -47,14 +47,23 @@ r =
 
 **Once, on a Windows PC with internet**
 
-1. Copy the `Matlab.ru` folder to the pendrive. Use a pendrive formatted as
-   **exFAT or NTFS** if you want models larger than 4 GB (FAT32 cannot hold them).
-2. If you still have the 1.8 GB file
-   `sha256-4a188102020e9c9530b687fd6400f775c45e90a0d7baafe65bd0a36963fbb7ba`
-   (the qwen2.5-coder:3b weights; too big for GitHub), copy it into
-   `Matlab.ru\model\blobs\`. The other files of that model are already in the repository.
-3. Double-click `Matlab.ru\setup_ru.bat`. It downloads the portable Ollama engine
-   into `Matlab.ru\ollama` and the model(s) you pick into `Matlab.ru\model`.
+1. Copy the `Matlab.ru` folder to the pendrive. The pendrive must be formatted as
+   **exFAT or NTFS**: qwen3.5:9b has a 6.6 GB file and FAT32 cannot hold files
+   larger than 4 GB (setup_ru.bat checks this and the free space; about 15 GB).
+2. Double-click `Matlab.ru\setup_ru.bat` and press Enter. It downloads the portable
+   Ollama engine into `Matlab.ru\ollama` and qwen3.5:9b + qwen2.5-coder:3b into
+   `Matlab.ru\model`. Nothing is installed on the PC.
+
+**Everything is inside the folder.** The engine, the models, the engine's own
+files (its key and temporary files, `brain\home`, `brain\tmp`), settings, logs and
+the scripts ru runs all stay in `Matlab.ru`. ru never uses an Ollama installed on
+a PC, nor the PC's Ollama or graphics settings, nor programs on the PC's PATH, so
+installing, removing or cleaning things on a PC changes nothing. Copy the whole
+folder to another drive or letter and it works there the same way; run it from
+there and only that copy is used (another copy on the PC is ignored, and an engine
+left running by another copy is replaced by this folder's own). Only when a lab PC
+makes USB drives read-only does ru keep its working files in the PC's temp folder
+for that session (it says so).
 
 **On any PC with MATLAB (offline)**
 
@@ -77,9 +86,12 @@ ru looks at each PC by itself and remembers what it learned in
   warns once; when the engine reports "not enough memory" it stops with the two
   ways out: `ru prep` (free memory) or `ru model qwen2.5-coder:3b` (small model on
   this PC). It never switches to a smaller model by itself.
-* **Wrong engine.** An engine left running from another copy of ru (or by
-  setup_ru.bat) serves that copy's models; ru notices that this folder's models are
-  missing from it and restarts the engine from this folder.
+* **Wrong engine.** An engine left running from another copy of ru (another
+  folder or drive letter, or setup_ru.bat) is recognised by its program path and
+  replaced by this folder's engine.
+* **Incomplete models.** A model whose big file is missing or cut short (an
+  interrupted download, a copy to another drive that failed) is not used; ru says
+  so and `setup_ru.bat` completes it.
 * **Graphics card and processor together.** A dedicated card (NVIDIA through CUDA,
   AMD/other dedicated cards through Vulkan) holds as much of the model as fits;
   the processor runs the rest. This split is automatic.
@@ -100,8 +112,8 @@ ru looks at each PC by itself and remembers what it learned in
   60 minutes after the last question. While you paste a problem into the `ru` box,
   the model already loads in the background.
 * **Waiting.** A one-line progress note (`ru: writing code ...`) is shown and
-  erased again. Timeouts are set from this PC's measured speed, so a slow PC is
-  not cut off.
+  erased again (MATLAB R2025a and newer cannot erase text, so there it stays as one
+  line). Timeouts are set from this PC's measured speed, so a slow PC is not cut off.
 
 **Before you start on a lab PC:** double-click `Matlab.ru\ru_prep.bat` (or type
 `ru prep` in MATLAB). It shows the free memory, lists your own heavy programs
@@ -119,6 +131,9 @@ no settings.
 | Windows 10 / 11 | works |
 | Windows 7 / 8.1 | the AI engine cannot run (Ollama needs Windows 10). ru still runs the verified solutions and shows the closest solved example for other problems. Or run the engine on your own laptop in the same network and connect: `ru host <laptop IP>` |
 | MATLAB R2016b - R2019b | works; ru tells the AI which newer functions this MATLAB lacks, and converts "double-quoted" strings for R2016b |
+| MATLAB R2025a and newer (new desktop, no Java at start) | works: the paste box, the background model loading and `ru img` from the clipboard use no Java there |
+| A proxy set in Windows or in MATLAB's preferences | ru notices that MATLAB's web functions cannot reach the engine and talks to it through Windows' curl without the proxy |
+| USB drives read-only (lab policy) | ru works; its working files go to the PC's temp folder for that session |
 | MATLAB older than R2016b | not supported (no JSON functions, no local functions in scripts) |
 | Antivirus / lab policy blocks programs on USB drives | ru detects it and says so; it does not try to get around it. Verified solutions still work |
 
@@ -126,11 +141,11 @@ no settings.
 
 | Model | Download | RAM needed | Reads images | Notes |
 |---|---|---|---|---|
-| qwen3.5:4b | 3.4 GB | 8 GB | yes | **recommended** |
-| qwen2.5-coder:3b | 1.9 GB | 6 GB | no | already on your pendrive (weights file above) |
-| qwen3.5:2b | 2.7 GB | 4–6 GB | yes | weak PCs |
+| qwen3.5:9b | 6.6 GB | 16 GB (about 9 GB free) | yes | **default**, strongest; needs exFAT/NTFS |
+| qwen2.5-coder:3b | 1.9 GB | 6 GB | no | small and fast: `ru model coder` |
+| qwen3.5:4b | 3.4 GB | 8 GB | yes | medium |
 | qwen2.5-coder:7b | 4.7 GB | 16 GB | no | needs exFAT/NTFS |
-| qwen3.5:9b | 6.6 GB | 16 GB | yes | strongest; needs exFAT/NTFS |
+| qwen3.5:2b | 2.7 GB | 4–6 GB | yes | weak PCs |
 
 **Default on every PC: the strongest installed model** (qwen3.5:9b when it is on
 the pendrive), for problems and for `ru img`, whatever the free memory; if the
@@ -138,7 +153,8 @@ memory looks too small ru says so once but does not switch. A smaller model is
 used only when you choose it: `ru model qwen2.5-coder:3b` (or `ru model coder`).
 That choice is kept **for that PC only**, so other PCs keep using 9b;
 `ru model auto` goes back to 9b. A misspelled name is refused with a suggestion.
-ru also uses models from an Ollama installed on the PC.
+Only the models in this folder's `model` subfolder are used (and a PC on the network
+only when you connect to it with `ru host <IP>`).
 
 ## Commands
 
@@ -261,11 +277,12 @@ Then run `ru test`. Examples with `% SELFTEST: skip` (they need data files) are 
 |---|---|
 | `No AI model is available` | `ru status`; run `setup_ru.bat` on a PC with internet |
 | `... is not in the running AI engine` | `ru status` shows the models folder ru reads and what is in it; download the model with `setup_ru.bat` into **this** folder |
-| `model ... INCOMPLETE - missing file(s)` | copy the missing `sha256-...` blob into `model\blobs` or re-run `setup_ru.bat` |
+| `model ... INCOMPLETE - missing file(s)` / `... is incomplete in ...` | a model file is missing or was cut short (interrupted download, failed copy to another drive): re-run `setup_ru.bat` (it resumes), or copy the `model` folder again |
+| `port 11435 is used by another program` | restart the PC (a stuck engine of another copy, run as administrator) |
 | very slow / timeout | `ru status` shows the speed on this PC; close other programs; `ru model qwen2.5-coder:3b` |
 | wrong or garbage answers on one PC only | `ru gpu off` (a bad graphics driver); `ru gpu auto` to try the card again |
 | want to see what ru did | `ru verbose on`; the full log is `brain\ru_log.txt`, the engine's is `brain\engine.log` |
-| `ru img` says no vision model | install `qwen3.5:4b` with `setup_ru.bat` |
+| `ru img` says no vision model | download `qwen3.5:9b` with `setup_ru.bat` |
 | wrong numbers read from a screenshot | correct them in the check box, or paste the text with `ru` |
 | a result looks wrong | `ru again`, `ru think <problem>`, or state the method and all numbers explicitly |
 

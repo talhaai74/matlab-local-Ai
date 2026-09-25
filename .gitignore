@@ -2,7 +2,7 @@
 Matlab.ru/brain/*
 !Matlab.ru/brain/backup/
 # Model weights and the portable Ollama program: far too large for git, keep them on the pendrive
-Matlab.ru/model/blobs/*
+Matlab.ru/model/
 Matlab.ru/models/
 Matlab.ru/ollama/
 # MATLAB autosave files

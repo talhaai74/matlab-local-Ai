@@ -45,13 +45,28 @@ end
 restoreErr = onCleanup(@() local_restoreLastErr(userLastErr));
 local_userError(userLastErr);
 root = fileparts(mfilename('fullpath'));
+% Any unexpected error inside ru becomes one short message (details in brain\ru_log.txt) instead of a
+% MATLAB error listing in the middle of the work.
+try
+    if nargout == 0
+        local_main(root, varargin{:});
+    else
+        [varargout{1:nargout}] = local_main(root, varargin{:});
+    end
+catch ME
+    local_internalError(root, ME);
+end
+end
+
+function varargout = local_main(root, varargin)
 local_setup(root);
 args = local_args(varargin);
 if numel(args) == 1
     % ru('remember my ID is ...') behaves like the command form  ru remember my ID is ...
     tok = regexp(args{1}, '^\s*(\S+)\s+(.+)$', 'tokens', 'once');
     if ~isempty(tok) && any(strcmpi(tok{1}, {'remember', 'ask', 'explain', 'fix', 'again', 'retry', 'think', ...
-            'ai', 'img', 'image', 'shot', 'screenshot', 'history', 'model', 'vision', 'host', 'save', '--retrieve'}))
+            'ai', 'img', 'image', 'shot', 'screenshot', 'history', 'model', 'vision', 'host', 'save', '--retrieve', ...
+            'verbose', 'gpu'}))
         args = {tok{1}, tok{2}};
     end
 end
@@ -111,7 +126,7 @@ switch cmd
         end
     case '--compact'
         % ru('--compact', code, problem): the code as ru shows and runs it (used by ru_selftest).
-        if nargin >= 3
+        if numel(varargin) >= 3
             varargout{1} = local_compactCode(varargin{2}, varargin{3});
             return
         end
@@ -216,6 +231,25 @@ end
 % Setup, input and small commands
 % =====================================================================
 
+function local_internalError(root, ME)
+local_busy('');
+where = '';
+if ~strncmp(ME.identifier, 'ru:', 3) && ~isempty(ME.stack)
+    where = sprintf(' (in %s, line %d)', ME.stack(1).name, ME.stack(1).line);
+end
+fprintf(2, '[ru] Stopped: %s%s\n', ME.message, where);
+fprintf(2, '[ru] Type the command again, or check with  ru status . Details: brain\\ru_log.txt\n');
+try
+    rep = getReport(ME, 'extended', 'hyperlinks', 'off');
+catch
+    rep = ME.message;
+    for k = 1:numel(ME.stack)
+        rep = sprintf('%s\n  at %s line %d', rep, ME.stack(k).name, ME.stack(k).line);
+    end
+end
+local_log(root, sprintf('INTERNAL ERROR:\n%s', rep));
+end
+
 function e = local_userError(set)
 % Remembers the user's last error message for "ru fix".
 persistent E
@@ -259,12 +293,35 @@ args = args(~cellfun(@(s) isempty(strtrim(s)), args));
 end
 
 function local_setup(root)
-dirs = {root, fullfile(root, 'ru_lib')};
+% Put this folder and its ru_lib on the MATLAB path. Another copy of ru on the path (an old folder,
+% another drive) is taken off it for this session, so its older library files cannot be used instead.
+persistent done
+if ~isempty(done) && strcmp(done, root)
+    return
+end
+lib = fullfile(root, 'ru_lib');
+try
+    p = strsplit(path, pathsep);
+    for k = 1:numel(p)
+        d = regexprep(p{k}, '[\\/]+$', '');
+        [parent, name] = fileparts(d);
+        if strcmpi(d, lib) || ~strcmpi(name, 'ru_lib') || exist(fullfile(d, 'root_bisection.m'), 'file') ~= 2
+            continue
+        end
+        rmpath(p{k});
+        if local_onPath(parent) && ~strcmpi(parent, root)
+            rmpath(parent);
+        end
+    end
+catch
+end
+dirs = {root, lib};
 for k = 1:numel(dirs)
     if exist(dirs{k}, 'dir') == 7 && ~local_onPath(dirs{k})
         addpath(dirs{k}, '-end');
     end
 end
+done = root;
 end
 
 function tf = local_onPath(d)
@@ -274,10 +331,83 @@ tf = any(strcmpi(p, d));
 end
 
 function d = local_brain(root)
-d = fullfile(root, 'brain');
-if exist(d, 'dir') ~= 7
-    mkdir(d);
+% ru's working folder: <ru folder>\brain on the pendrive. Only when the pendrive cannot be written
+% here (a lab policy that makes USB drives read-only) a folder in this PC's temp folder is used for
+% this session, starting from a copy of the pendrive's settings.
+persistent R D
+if ~isempty(R) && strcmp(R, root) && exist(D, 'dir') == 7
+    d = D;
+    return
 end
+d = fullfile(root, 'brain');
+if local_canWrite(d)
+    R = root;
+    D = d;
+    return
+end
+alt = fullfile(tempdir, ['ru_brain_' local_hashText(root)]);
+if exist(alt, 'dir') ~= 7
+    try
+        mkdir(alt);
+        f = [dir(fullfile(d, '*.txt')); dir(fullfile(d, '*.json'))];
+        for k = 1:numel(f)
+            copyfile(fullfile(d, f(k).name), alt);
+        end
+    catch
+    end
+end
+if exist(alt, 'dir') ~= 7
+    d = fullfile(root, 'brain');                 % nothing writable at all: writes will report it
+    return
+end
+local_err(['[ru] The pendrive cannot be written on this PC (write-protected or a lab policy). ru keeps its ' ...
+    'working files in %s for this session.\n'], alt);
+R = root;
+D = alt;
+d = alt;
+end
+
+function ok = local_canWrite(d)
+ok = false;
+try
+    if exist(d, 'dir') ~= 7
+        mkdir(d);
+    end
+    probe = fullfile(d, sprintf('.write_test_%d.tmp', floor(rand * 1e9)));
+    fid = fopen(probe, 'w');
+    if fid > 0
+        fclose(fid);
+        delete(probe);
+        ok = true;
+    end
+catch
+end
+end
+
+function h = local_hashText(t)
+% Short, stable name for a text (a folder path).
+v = double(lower(t));
+h = 5381;
+for k = 1:numel(v)
+    h = mod(h * 33 + v(k), 4294967291);
+end
+h = sprintf('%08x', h);
+end
+
+function d = local_workDir(root, name)
+% A subfolder of ru's working folder (created when missing): tmp, home, run.
+d = fullfile(local_brain(root), name);
+if exist(d, 'dir') ~= 7
+    try
+        mkdir(d);
+    catch
+    end
+end
+end
+
+function f = local_tmpFile(root, ext)
+% A temporary file in ru's own folder (not in the PC's temp folder).
+f = fullfile(local_workDir(root, 'tmp'), sprintf('ru_%s_%d%s', datestr(now, 'HHMMSSFFF'), floor(rand * 1e6), ext));
 end
 
 function txt = local_clipboard()
@@ -292,11 +422,54 @@ end
 end
 
 function tf = local_desktop()
+% MATLAB with windows (dialog boxes can be shown). MATLAB R2025a and newer have a desktop that is not
+% Java-based, where usejava('desktop') is false, so that is not the only test.
+persistent T
+if ~isempty(T)
+    tf = T;
+    return
+end
 tf = false;
+if exist('OCTAVE_VERSION', 'builtin')
+    T = tf;
+    return
+end
 try
-    tf = usejava('desktop') && ~exist('OCTAVE_VERSION', 'builtin');
+    if isdeployed || batchStartupOptionUsed
+        T = tf;
+        return
+    end
 catch
 end
+try
+    tf = usejava('desktop');
+catch
+end
+if ~tf && local_newDesktop()
+    tf = true;                                     % try the box; if it cannot open, the command line is used
+    try
+        tf = logical(feature('ShowFigureWindows'));  % false only with -nodisplay
+    catch
+    end
+end
+tf = logical(tf);
+T = tf;
+end
+
+function tf = local_newDesktop()
+% MATLAB R2025a or newer: web-based desktop, Java only loaded on demand, no backspaces in the
+% Command Window.
+persistent T
+if isempty(T)
+    T = false;
+    if ~exist('OCTAVE_VERSION', 'builtin')
+        try
+            T = sscanf(version, '%d', 1) >= 25;
+        catch
+        end
+    end
+end
+tf = T;
 end
 
 function txt = local_askProblem()
@@ -307,34 +480,44 @@ if local_desktop()
         def = '';
     end
     lines = regexp(strrep(def, char(13), ''), '\n', 'split');
+    shown = false;
     a = {};
     try
         a = inputdlg({['Paste or type the problem (text, equations, tables; several lines are fine). ' ...
             'Edit it if needed, then press OK:']}, 'ru', [22 130], {char(lines)});
+        shown = true;
     catch
         try
             a = inputdlg({'Paste or type the problem, then press OK:'}, 'ru', [22 130]);
+            shown = true;
         catch
-            a = {};
         end
     end
-    if isempty(a)
+    if shown
+        if isempty(a)
+            return                               % Cancel
+        end
+        v = a{1};
+        if size(v, 1) > 1
+            txt = strjoin(cellstr(v)', char(10));
+        else
+            txt = v;
+        end
         return
     end
-    v = a{1};
-    if size(v, 1) > 1
-        txt = strjoin(cellstr(v)', char(10));
-    else
-        txt = v;
-    end
-else
-    clip = strtrim(local_clipboard());
-    if ~isempty(clip)
-        fprintf('[ru] Using the problem on the clipboard:\n%s\n', local_preview(clip, 1200));
+end
+% No dialog box possible: never solve the clipboard without asking (it may hold something else).
+clip = strtrim(local_clipboard());
+if ~isempty(clip)
+    fprintf('[ru] On the clipboard:\n%s\n', local_preview(clip, 1200));
+    r = input('ru> Press Enter to solve this, or type the problem on one line: ', 's');
+    if isempty(strtrim(r))
         txt = clip;
     else
-        txt = input('ru> Type the problem on one line: ', 's');
+        txt = r;
     end
+else
+    txt = input('ru> Type the problem on one line: ', 's');
 end
 end
 
@@ -2037,10 +2220,30 @@ local_route(root, prompt, opts);
 end
 
 function f = local_clipboardImage(root)
-% Save an image on the system clipboard (e.g. a Win+Shift+S screenshot) as PNG.
+% Save an image on the system clipboard (e.g. a Win+Shift+S screenshot) as PNG: with Java in MATLAB
+% R2024b and older, with Windows' own PowerShell otherwise (R2025a+ loads no Java at start).
 f = '';
+if ~exist('OCTAVE_VERSION', 'builtin') && (local_newDesktop() || ~usejava('awt'))
+    if ispc
+        g = fullfile(local_brain(root), 'clipboard_image.png');
+        if exist(g, 'file') == 2
+            delete(g);
+        end
+        cmd = sprintf(['powershell -NoProfile -NonInteractive -STA -Command "Add-Type -AssemblyName ' ...
+            'System.Windows.Forms; $i = [System.Windows.Forms.Clipboard]::GetImage(); if ($i) { ' ...
+            '$i.Save(''%s'', [System.Drawing.Imaging.ImageFormat]::Png) }"'], strrep(g, '''', ''''''));
+        try
+            [~, ~] = system(cmd);
+        catch
+        end
+        if exist(g, 'file') == 2
+            f = g;
+        end
+    end
+    return
+end
 try
-    if exist('OCTAVE_VERSION', 'builtin') || ~usejava('awt')
+    if exist('OCTAVE_VERSION', 'builtin')
         return
     end
     cb = java.awt.Toolkit.getDefaultToolkit().getSystemClipboard();
@@ -2123,13 +2326,16 @@ try
         end
         step = max(1, ceil(max(size(img, 1), size(img, 2)) / 2000));
         img = img(1:step:end, 1:step:end, 1:3);
-        src = [tempname '.png'];
+        src = local_tmpFile(fileparts(mfilename('fullpath')), '.png');
         imwrite(img, src);
     end
     fid = fopen(src, 'r');
     bytes = fread(fid, inf, '*uint8');
     fclose(fid);
     b64 = matlab.net.base64encode(bytes');
+    if ~strcmp(src, file)
+        delete(src);
+    end
 catch
     b64 = '';
 end
@@ -2289,10 +2495,12 @@ end
 
 function cmds = local_recentCommands(n)
 cmds = {};
-try
-    h = com.mathworks.mlservices.MLCommandHistoryServices.getSessionHistory;
-    cmds = cell(h)';
-catch
+if ~local_newDesktop()                       % Java desktop only (R2024b and older)
+    try
+        h = com.mathworks.mlservices.MLCommandHistoryServices.getSessionHistory;
+        cmds = cell(h)';
+    catch
+    end
 end
 if isempty(cmds)
     try
@@ -3178,10 +3386,20 @@ fprintf(2, varargin{:});
 end
 
 function local_busy(txt)
-% One temporary status line ("ru: writing code ...") that is erased again afterwards.
-persistent n
+% One temporary status line ("ru: writing code ...") that is erased again afterwards. MATLAB R2025a
+% and newer cannot erase text in the Command Window: there the line is printed once and stays.
+persistent n last
 if isempty(n)
     n = 0;
+    last = '';
+end
+if local_newDesktop()
+    if ~isempty(txt) && ~strcmp(txt, last) && isempty(strfind(txt, 'running and checking'))
+        fprintf('%s\n', txt);
+        drawnow;
+    end
+    last = txt;
+    return
 end
 if n > 0
     b = repmat(sprintf('\b'), 1, n);
@@ -3442,6 +3660,11 @@ txt = fread(fid, [1 Inf], '*char');
 if ~isempty(txt) && double(txt(1)) == 65279
     txt = txt(2:end);
 end
+end
+
+function t = local_batText(t)
+% A value inside a .bat file: %% for a literal percent sign (quotes are not allowed in Windows paths).
+t = strrep(t, '%', '%%');
 end
 
 function local_writeText(f, txt)
@@ -4110,6 +4333,7 @@ if ~local_ping(pend) && (forceStart || ~customUp) ...
     local_busy('');
 end
 [H, M, S] = local_findModels(hosts);
+[H, M, S] = local_dropIncomplete(root, H, M, S);
 if isempty(M)
     if isempty(local_engineProblem())
         if isempty(local_pendriveModels(root))
@@ -4141,17 +4365,62 @@ if local_ping(E.host)
 end
 end
 
+function [H, M, S] = local_dropIncomplete(root, H, M, S)
+% A model of this folder whose weight file is missing or shorter than it should be (an interrupted
+% download, a copy to another drive that failed on a big file) is listed by the engine but cannot
+% load: it is not used, and ru says once how to repair it.
+persistent told
+if isempty(told)
+    told = {};
+end
+P = local_pendriveModels(root);
+if isempty(P)
+    return
+end
+keep = true(1, numel(M));
+for k = 1:numel(M)
+    if ~local_isPendHost(H{k})
+        continue
+    end
+    j = find(arrayfun(@(p) local_sameModel(p.name, M{k}), P), 1);
+    if ~isempty(j) && ~P(j).complete
+        keep(k) = false;
+        if ~any(strcmp(told, M{k}))
+            told{end+1} = M{k}; %#ok<AGROW>
+            local_err(['[ru] %s is incomplete in %s (a model file is missing or was cut short, e.g. by a copy ' ...
+                'that failed): it is not used. Run setup_ru.bat on a PC with internet to complete it.\n'], ...
+                M{k}, local_modelsDir(root));
+        end
+    end
+end
+H = H(keep);
+M = M(keep);
+S = S(keep);
+end
+
 function local_checkEngineFolder(root)
-% An engine on port 11435 that was started from another folder (another copy of ru, setup_ru.bat)
-% serves that folder's models, so models of THIS pendrive look "not installed". Restart it here.
+% An engine on port 11435 that was started from another folder (another copy of ru, another drive
+% letter, an Ollama of the PC) serves that folder's models with that folder's settings. Only the
+% engine program of THIS folder is used: any other is stopped and this folder's engine started.
 persistent done
 if ~isempty(done) && strcmp(done, root)
     return
 end
 done = root;
-if isempty(local_findOllama(root))
+mine = local_findOllama(root);
+if isempty(mine)
     return
 end
+running = local_engineExe();
+if ~isempty(running)
+    if ~strcmpi(strrep(running, '/', '\'), strrep(mine, '/', '\'))
+        local_err('[ru] The running AI engine is %s, not the one in this folder; restarting it from %s ...\n', ...
+            running, root);
+        local_restartEngine(root, false);
+    end
+    return
+end
+% Program path unknown (PowerShell blocked): judge by the models it serves.
 P = local_pendriveModels(root);
 if isempty(P)
     return
@@ -4197,7 +4466,9 @@ msg = P;
 end
 
 function hosts = local_hosts(root)
-hosts = {local_pendHost(), 'http://127.0.0.1:11434'};
+% Only the engine of this folder (port 11435); another computer only when chosen with  ru host <IP>.
+% An Ollama installed on the PC itself (port 11434) is never used: ru must not depend on the PC.
+hosts = {local_pendHost()};
 custom = strtrim(local_setting(root, 'host', ''));
 if ~isempty(custom)
     if isempty(regexp(custom, '^https?://', 'once'))
@@ -4279,10 +4550,14 @@ end
 function r = local_getJSON(url, timeout)
 r = [];
 try
-    if exist('OCTAVE_VERSION', 'builtin')
+    if local_useCurl()
         raw = local_curl(url, '', timeout);
     else
-        raw = webread(url, weboptions('Timeout', timeout, 'ContentType', 'text'));
+        try
+            raw = webread(url, weboptions('Timeout', timeout, 'ContentType', 'text'));
+        catch err
+            raw = local_curlFallback(url, '', timeout, err);
+        end
     end
     if ~ischar(raw)
         raw = char(raw);
@@ -4293,7 +4568,7 @@ end
 end
 
 function r = local_postJSON(url, body, timeout)
-if exist('OCTAVE_VERSION', 'builtin')
+if local_useCurl()
     raw = local_curl(url, jsonencode(body), timeout);
 else
     raw = webwrite(url, jsonencode(body), weboptions('MediaType', 'application/json', 'ContentType', 'text', ...
@@ -4305,23 +4580,74 @@ end
 r = jsondecode(raw);
 end
 
+function tf = local_useCurl(set)
+% true in GNU Octave, and in MATLAB when MATLAB's own web functions cannot reach the engine on this
+% PC (a proxy configured in Windows or in MATLAB's preferences catches 127.0.0.1): curl without proxy.
+persistent U
+if isempty(U)
+    U = exist('OCTAVE_VERSION', 'builtin') > 0;
+end
+if nargin == 1
+    U = set;
+end
+tf = U;
+end
+
+function raw = local_curlFallback(url, json, timeout, err)
+% MATLAB's web request (a GET: ping, model list) failed. If curl reaches the engine, a proxy setting
+% of this PC was in the way: all requests use curl from now on. Otherwise the original error stands
+% (the engine is not running).
+if ~isempty(json) || ~local_isLocalHost(url) || isempty(local_curlExe())
+    rethrow(err);
+end
+try
+    raw = local_curl(url, '', timeout);
+catch
+    rethrow(err);
+end
+if isempty(strtrim(raw))
+    rethrow(err);
+end
+local_useCurl(true);
+end
+
+function c = local_curlExe()
+persistent C
+if isempty(C)
+    C = 'curl';
+    if ispc
+        C = fullfile(getenv('SystemRoot'), 'System32', 'curl.exe');
+        if exist(C, 'file') ~= 2
+            C = '';
+        end
+    end
+end
+c = C;
+end
+
 function raw = local_curl(url, json, timeout)
-% GNU Octave has no JSON web client; use curl there (MATLAB uses webread/webwrite).
-out = [tempname '.json'];
+% HTTP without MATLAB's web functions (GNU Octave, or a PC whose proxy settings block 127.0.0.1).
+root = fileparts(mfilename('fullpath'));
+exe = local_curlExe();
+if isempty(exe)
+    error('ru:curl', 'curl.exe is not on this PC (Windows 10 or newer has it)');
+end
+out = local_tmpFile(root, '.json');
+in = '';
 if isempty(json)
-    cmd = sprintf('curl -s -S --max-time %d -o "%s" "%s" 2>&1', ceil(timeout), out, url);
+    cmd = sprintf('"%s" -s -S --noproxy "*" --max-time %d -o "%s" "%s" 2>&1', exe, ceil(timeout), out, url);
 else
-    in = [tempname '.json'];
+    in = local_tmpFile(root, '.json');
     local_writeText(in, json);
-    cmd = sprintf('curl -s -S --max-time %d -H "Content-Type: application/json" --data-binary "@%s" -o "%s" "%s" 2>&1', ...
-        ceil(timeout), in, out, url);
+    cmd = sprintf('"%s" -s -S --noproxy "*" --max-time %d -H "Content-Type: application/json" --data-binary "@%s" -o "%s" "%s" 2>&1', ...
+        exe, ceil(timeout), in, out, url);
 end
 [st, msg] = system(cmd);
 raw = local_readText(out);
 if exist(out, 'file') == 2
     delete(out);
 end
-if ~isempty(json) && exist(in, 'file') == 2
+if ~isempty(in) && exist(in, 'file') == 2
     delete(in);
 end
 if st ~= 0
@@ -4400,12 +4726,12 @@ for i = 1:numel(M)
     end
 end
 if ~isempty(want) && ~strcmpi(want, 'auto')
-    for i = 1:numel(M)
-        if ok(i) && local_sameModel(want, M{i})
-            k = i;
-            why = 'chosen for this PC with ru model / ru vision';
-            return
-        end
+    usable = find(ok);
+    j = local_matchModel(want, M(usable));
+    if j > 0
+        k = usable(j);
+        why = 'chosen for this PC with ru model / ru vision';
+        return
     end
     if ~any(strcmp(noted, ['want:' want]))
         noted{end+1} = ['want:' want];
@@ -4527,6 +4853,23 @@ for i = 1:numel(M)
 end
 end
 
+function j = local_matchModel(want, names)
+% Index of the model meant by a name: the exact name, else a short form ("9b", "coder") that exactly
+% one of the names contains. 0 when none or several match.
+j = 0;
+if isempty(names)
+    return
+end
+hit = find(cellfun(@(n) local_sameModel(want, n), names), 1);
+if isempty(hit)
+    hit = find(~cellfun(@isempty, strfind(lower(names), lower(strtrim(want)))));
+    if numel(hit) ~= 1
+        return
+    end
+end
+j = hit;
+end
+
 function tf = local_sameModel(a, b)
 tf = strcmpi(regexprep(a, ':latest$', ''), regexprep(b, ':latest$', ''));
 end
@@ -4542,7 +4885,8 @@ end
 
 function names = local_installedNames(root)
 % Models this ru can use: those of the running engines plus the complete ones on the pendrive.
-[~, names] = local_findModels(local_hosts(root));
+[H, names, S] = local_findModels(local_hosts(root));
+[~, names] = local_dropIncomplete(root, H, names, S);
 P = local_pendriveModels(root);
 for k = 1:numel(P)
     if P(k).complete && ~any(cellfun(@(n) local_sameModel(n, P(k).name), names))
@@ -5031,29 +5375,48 @@ if exist(logf, 'file') == 2
     catch
     end
 end
-old = cell(size(env, 1), 1);
-for i = 1:size(env, 1)
-    old{i} = getenv(env{i, 1});
-    setenv(env{i, 1}, env{i, 2});
-end
+% The engine keeps everything it writes in ru's folder: its key and settings (home), temporary files.
+home = local_workDir(root, 'home');
+tmp = local_workDir(root, 'tmp');
+env = [env; {'USERPROFILE', home; 'HOME', home; 'TMP', tmp; 'TEMP', tmp}];
 st = 0;
 out = '';
 try
     if ispc
-        % A small launcher file avoids quoting problems with spaces or & in the pendrive path.
+        % A launcher file in ru's folder, written again at every start (so a new drive letter or folder
+        % is always right). It removes every Ollama/graphics setting of this PC and uses only Windows'
+        % own folders on PATH, so programs or settings installed on the PC cannot change the engine.
         bat = fullfile(local_brain(root), 'ru_engine.bat');
-        local_writeText(bat, sprintf(['@echo off\r\nchcp 65001 >nul\r\ntitle ru engine - close this window to stop the AI\r\n' ...
-            '"%s" serve > "%s" 2>&1\r\n'], exe, logf));
+        exeDir = fileparts(exe);
+        L = {'@echo off', 'chcp 65001 >nul', 'title ru engine - close this window to stop the AI', ...
+            'for /f "delims==" %%V in (''set OLLAMA_ 2^>nul'') do set "%%V="'};
+        for v = {'CUDA_VISIBLE_DEVICES', 'HIP_VISIBLE_DEVICES', 'ROCR_VISIBLE_DEVICES', 'GPU_DEVICE_ORDINAL', ...
+                'GGML_VK_VISIBLE_DEVICES', 'CUDA_PATH'}
+            L{end+1} = sprintf('set "%s="', v{1}); %#ok<AGROW>
+        end
+        L{end+1} = sprintf(['set "PATH=%s;%s;%%SystemRoot%%\\System32;%%SystemRoot%%;' ...
+            '%%SystemRoot%%\\System32\\Wbem"'], local_batText(exeDir), local_batText(fullfile(exeDir, 'lib', 'ollama')));
+        for i = 1:size(env, 1)
+            L{end+1} = sprintf('set "%s=%s"', env{i, 1}, local_batText(env{i, 2})); %#ok<AGROW>
+        end
+        L{end+1} = sprintf('"%s" serve > "%s" 2>&1', local_batText(exe), local_batText(logf));
+        local_writeText(bat, [strjoin(L, sprintf('\r\n')) sprintf('\r\n')]);
         [st, out] = system(sprintf('start "ru engine" /min "%s"', bat));
     else
+        env = [env; {'TMPDIR', tmp}];
+        old = cell(size(env, 1), 1);
+        for i = 1:size(env, 1)
+            old{i} = getenv(env{i, 1});
+            setenv(env{i, 1}, env{i, 2});
+        end
         [st, out] = system(sprintf('"%s" serve > "%s" 2>&1 &', exe, logf));
+        for i = 1:size(env, 1)
+            setenv(env{i, 1}, old{i});
+        end
     end
 catch err
     st = 1;
     out = err.message;
-end
-for i = 1:size(env, 1)
-    setenv(env{i, 1}, old{i});
 end
 if st ~= 0 || ~isempty(regexpi(out, 'blocked|denied|group policy|cannot find|not recognized', 'once'))
     local_engineProblem(sprintf(['Windows did not start the AI engine (%s). This PC may block programs on USB ' ...
@@ -5066,6 +5429,18 @@ while toc(t0) < 180
     if local_ping(local_pendHost())
         ok = true;
         break
+    end
+    % Ollama's own fatal messages start a line ("Error: listen tcp ...: bind: ...", "panic: ..."); the
+    % normal log lines start with "time=" and may mention harmless graphics-driver errors.
+    fatal = regexp([char(10) local_readText(logf)], '\n((Error|panic): [^\r\n]*)', 'tokens');
+    if ~isempty(fatal)
+        why = strtrim(fatal{end}{1});
+        if ~isempty(regexpi(why, 'bind|only one usage|address already in use', 'once'))
+            why = ['port 11435 is used by another program on this PC (' why '). Restart the PC, or close ' ...
+                'that program'];
+        end
+        local_engineProblem(['the AI engine stopped: ' why]);
+        return
     end
     if toc(t0) > 20 && ~local_engineRunning()
         txt = local_readText(logf);
@@ -5148,7 +5523,15 @@ try
         end
         pause(1);
         if local_ping(local_pendHost())
-            % Last resort: every ollama.exe of this user (the PID lookup failed, e.g. another Windows language).
+            % The PID lookup failed (e.g. another Windows language): the ollama.exe programs of this folder.
+            exe = fullfile(fileparts(mfilename('fullpath')), 'ollama', 'ollama.exe');
+            [~, ~] = system(sprintf(['powershell -NoProfile -NonInteractive -Command "Get-Process ollama ' ...
+                '-ErrorAction SilentlyContinue | Where-Object { $_.Path -eq ''%s'' } | Stop-Process -Force"'], ...
+                strrep(exe, '''', '''''')));
+            pause(1);
+        end
+        if local_ping(local_pendHost())
+            % Last resort: every ollama.exe of this user.
             [~, ~] = system('taskkill /F /T /IM ollama.exe');
         end
     else
@@ -5161,6 +5544,31 @@ for k = 1:20
     if ~local_ping(local_pendHost())
         break
     end
+end
+end
+
+function exe = local_engineExe()
+% Full path of the program listening on port 11435 ('' when it cannot be found out).
+exe = '';
+if ~ispc
+    return
+end
+try
+    [~, out] = system('netstat -ano -p tcp');
+    pid = regexp(out, '127\.0\.0\.1:11435\s+\S+\s+LISTENING\s+(\d+)', 'tokens', 'once');
+    if isempty(pid)
+        pid = regexp(out, '127\.0\.0\.1:11435\s+0\.0\.0\.0:0\s+\S+\s+(\d+)', 'tokens', 'once');
+    end
+    if isempty(pid) || strcmp(pid{1}, '0')
+        return
+    end
+    [st, out] = system(sprintf(['powershell -NoProfile -NonInteractive -Command "(Get-Process -Id %s ' ...
+        '-ErrorAction SilentlyContinue).Path"'], pid{1}));
+    out = strtrim(out);
+    if st == 0 && ~isempty(regexp(out, '^[A-Za-z]:\\.*\.exe$', 'once'))
+        exe = out;
+    end
+catch
 end
 end
 
@@ -5184,31 +5592,18 @@ end
 end
 
 function exe = local_findOllama(root)
+% The engine program in this folder only (setup_ru.bat puts it there). An Ollama installed on the
+% PC is ignored on purpose: the pendrive must work the same on every PC.
 exe = '';
-c = {fullfile(root, 'ollama', 'ollama.exe'), fullfile(root, 'ollama', 'ollama'), ...
-    fullfile(root, 'ollama', 'bin', 'ollama'), ...
-    fullfile(getenv('LOCALAPPDATA'), 'Programs', 'Ollama', 'ollama.exe'), ...
-    fullfile(getenv('ProgramFiles'), 'Ollama', 'ollama.exe'), ...
-    '/usr/local/bin/ollama', '/usr/bin/ollama', '/opt/homebrew/bin/ollama'};
+c = {fullfile(root, 'ollama', 'ollama.exe'), fullfile(root, 'ollama', 'ollama'), fullfile(root, 'ollama', 'bin', 'ollama')};
+if ispc
+    c = c(1);
+end
 for k = 1:numel(c)
     if exist(c{k}, 'file') == 2
         exe = c{k};
         return
     end
-end
-try
-    if ispc
-        [st, out] = system('where ollama');
-    else
-        [st, out] = system('which ollama');
-    end
-    if st == 0
-        first = strtrim(regexp(out, '[^\r\n]+', 'match', 'once'));
-        if exist(first, 'file') == 2
-            exe = first;
-        end
-    end
-catch
 end
 end
 
@@ -5413,6 +5808,9 @@ r = [];
 for tries = 1:2
     try
         r = local_postJSON([host '/api/chat'], body, timeout);
+        if isstruct(r) && isfield(r, 'error')
+            error('ru:engine', '%s', char(r.error));    % curl returns the engine's error as JSON
+        end
         err = '';
         break
     catch ME
@@ -5480,15 +5878,25 @@ local_writeText(f, jsonencode(body));
 url = [E.host '/api/chat'];
 try
     if ispc && ~exist('OCTAVE_VERSION', 'builtin')
-        curl = fullfile(getenv('SystemRoot'), 'System32', 'curl.exe');
-        if exist(curl, 'file') ~= 2 || ~usejava('jvm')
+        curl = local_curlExe();
+        if isempty(curl)
             return
         end
-        pb = java.lang.ProcessBuilder({curl, '-s', '-m', '3600', '-o', 'NUL', '-H', 'Content-Type: application/json', ...
-            '--data-binary', ['@' f], url});
-        pb.redirectErrorStream(true);
-        pb.redirectOutput(java.io.File(fullfile(local_brain(root), 'warmup.log')));
-        pb.start();
+        logw = fullfile(local_brain(root), 'warmup.log');
+        if ~local_newDesktop() && usejava('jvm')
+            pb = java.lang.ProcessBuilder({curl, '-s', '--noproxy', '*', '-m', '3600', '-o', 'NUL', '-H', ...
+                'Content-Type: application/json', '--data-binary', ['@' f], url});
+            pb.redirectErrorStream(true);
+            pb.redirectOutput(java.io.File(logw));
+            pb.start();
+        else
+            % MATLAB R2025a+ (no Java at start): a small minimized window that closes when the model is loaded.
+            bat = fullfile(local_brain(root), 'ru_warmup.bat');
+            local_writeText(bat, sprintf(['@echo off\r\nchcp 65001 >nul\r\n"%s" -s --noproxy "*" -m 3600 -o NUL ' ...
+                '-H "Content-Type: application/json" --data-binary "@%s" "%s" > "%s" 2>&1\r\nexit\r\n'], ...
+                local_batText(curl), local_batText(f), url, local_batText(logw)));
+            [~, ~] = system(sprintf('start "ru loading the AI model" /min "%s"', bat));
+        end
     else
         [~, ~] = system(sprintf(['curl -s -m 3600 -o /dev/null -H "Content-Type: application/json" ' ...
             '--data-binary "@%s" "%s" > /dev/null 2>&1 &'], f, url));
@@ -5726,15 +6134,8 @@ if strcmpi(value, 'auto')
     choice = 'auto';
 else
     choice = '';
-    hit = find(cellfun(@(n) local_sameModel(value, n), names), 1);
-    if isempty(hit)
-        % Short forms: "9b" or "coder" when exactly one installed model contains it.
-        part = find(~cellfun(@isempty, strfind(lower(names), lower(value))));
-        if numel(part) == 1
-            hit = part;
-        end
-    end
-    if ~isempty(hit)
+    hit = local_matchModel(value, names);
+    if hit > 0
         choice = names{hit};
     elseif isempty(names)
         choice = value;
@@ -5763,7 +6164,7 @@ end
 
 function v = local_setting(root, key, default)
 v = default;
-f = fullfile(root, 'brain', 'settings.txt');
+f = fullfile(local_brain(root), 'settings.txt');
 if exist(f, 'file') ~= 2
     return
 end
