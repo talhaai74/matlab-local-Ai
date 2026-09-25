@@ -21,12 +21,11 @@ end
 
 Z = [ones(m,1) X];
 p = size(Z,2);
-ZtZ = Z'*Z;
-if rank(ZtZ) < p
+if rank(Z) < p
     error('ru_lib:fit_multilinear:singular', ...
         'FIT_MULTILINEAR: the predictor columns of X are linearly dependent; drop a redundant column.');
 end
-a = ZtZ\(Z'*y);
+a = Z\y;                       % least squares by QR: same a as (Z'*Z)\(Z'*y), without squaring cond(Z)
 
 yhat = Z*a;
 St = sum((y-mean(y)).^2);

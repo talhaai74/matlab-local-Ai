@@ -30,10 +30,10 @@ r =
 * **No AI can guarantee zero mistakes.** `ru` reduces them with checks that run
   real code (see *How ru avoids wrong answers*), but a small offline model still
   makes errors. For important answers, read the printed equations and checks.
-* The model you run decides how strong ru is. `qwen2.5-coder:3b` (the model
-  already on your pendrive) solves standard CE206 problems when a similar solved
-  example exists, but fails on some problems that need restructuring.
-  **`qwen3.5:4b` is recommended**: it also reads screenshots. `setup_ru.bat` downloads it.
+* The model you run decides how strong ru is. **qwen3.5:9b** (the default) is the
+  strongest and also reads screenshots. `qwen2.5-coder:3b` is small and fast; it
+  solves standard CE206 problems when a similar solved example exists, but fails
+  on some problems that need restructuring. `setup_ru.bat` downloads both.
 * Screenshots of **figures** (trusses, beams) are described in words by the vision
   model and can be wrong: `ru img` always shows the text it read and lets you fix
   it before solving.
@@ -47,14 +47,23 @@ r =
 
 **Once, on a Windows PC with internet**
 
-1. Copy the `Matlab.ru` folder to the pendrive. Use a pendrive formatted as
-   **exFAT or NTFS** if you want models larger than 4 GB (FAT32 cannot hold them).
-2. If you still have the 1.8 GB file
-   `sha256-4a188102020e9c9530b687fd6400f775c45e90a0d7baafe65bd0a36963fbb7ba`
-   (the qwen2.5-coder:3b weights; too big for GitHub), copy it into
-   `Matlab.ru\model\blobs\`. The other files of that model are already in the repository.
-3. Double-click `Matlab.ru\setup_ru.bat`. It downloads the portable Ollama engine
-   into `Matlab.ru\ollama` and the model(s) you pick into `Matlab.ru\model`.
+1. Copy the `Matlab.ru` folder to the pendrive. The pendrive must be formatted as
+   **exFAT or NTFS**: qwen3.5:9b has a 6.6 GB file and FAT32 cannot hold files
+   larger than 4 GB (setup_ru.bat checks this and the free space; about 15 GB).
+2. Double-click `Matlab.ru\setup_ru.bat` and press Enter. It downloads the portable
+   Ollama engine into `Matlab.ru\ollama` and qwen3.5:9b + qwen2.5-coder:3b into
+   `Matlab.ru\model`. Nothing is installed on the PC.
+
+**Everything is inside the folder.** The engine, the models, the engine's own
+files (its key and temporary files, `brain\home`, `brain\tmp`), settings, logs and
+the scripts ru runs all stay in `Matlab.ru`. ru never uses an Ollama installed on
+a PC, nor the PC's Ollama or graphics settings, nor programs on the PC's PATH, so
+installing, removing or cleaning things on a PC changes nothing. Copy the whole
+folder to another drive or letter and it works there the same way; run it from
+there and only that copy is used (another copy on the PC is ignored, and an engine
+left running by another copy is replaced by this folder's own). Only when a lab PC
+makes USB drives read-only does ru keep its working files in the PC's temp folder
+for that session (it says so).
 
 **On any PC with MATLAB (offline)**
 
@@ -72,13 +81,17 @@ r =
 ru looks at each PC by itself and remembers what it learned in
 `brain\pc_<computer name>.json`. `ru status` shows all of it.
 
-* **Model choice, quality first.** ru measures the free memory (RAM, plus the
-  memory of a dedicated graphics card) and uses the **strongest model that fits**.
-  With your pendrive (qwen3.5:9b and qwen2.5-coder:3b): a PC with about 10 GB free
-  memory or more uses qwen3.5:9b; an 8 GB PC uses qwen2.5-coder:3b (and cannot read
-  screenshots, because only 9b can). If a stronger model would fit after closing
-  programs, ru says so once. If the engine still reports "not enough memory", ru
-  switches to the next model by itself and remembers it for this PC.
+* **Model choice.** ru always uses the strongest installed model (qwen3.5:9b,
+  about 9 GB free memory for good speed). When the free memory is smaller it
+  warns once; when the engine reports "not enough memory" it stops with the two
+  ways out: `ru prep` (free memory) or `ru model qwen2.5-coder:3b` (small model on
+  this PC). It never switches to a smaller model by itself.
+* **Wrong engine.** An engine left running from another copy of ru (another
+  folder or drive letter, or setup_ru.bat) is recognised by its program path and
+  replaced by this folder's engine.
+* **Incomplete models.** A model whose big file is missing or cut short (an
+  interrupted download, a copy to another drive that failed) is not used; ru says
+  so and `setup_ru.bat` completes it.
 * **Graphics card and processor together.** A dedicated card (NVIDIA through CUDA,
   AMD/other dedicated cards through Vulkan) holds as much of the model as fits;
   the processor runs the rest. This split is automatic.
@@ -93,14 +106,37 @@ ru looks at each PC by itself and remembers what it learned in
 * **Old processors** (Core 2 Duo, Pentium dual-core, no AVX) work: the engine has
   a build for them. They are slow; qwen2.5-coder:3b is chosen on such PCs when the
   memory is small.
-* **Nothing is loaded twice.** Every request uses the same context size (a
+* **Nothing is loaded twice.** Every request uses the same load settings (a
   change would make the engine reload the whole model), the fixed part of the
-  prompt comes first so the engine can reuse it, and a model stays in memory for
-  60 minutes after the last question. While you paste a problem into the `ru` box,
-  the model already loads in the background.
+  prompt comes first so the engine can reuse it, and the model stays in memory for
+  4 hours after the last question (a whole exam; `ru stop` frees it earlier). While
+  you paste a problem into the `ru` box, the model already loads in the background.
+  Type `ru start` at the beginning of an exam to load it while you read the paper.
+* **Fast engine start on PCs without a graphics card** (most lab PCs). Before the
+  first start ru reads the PC's display adapters from Windows; with only Intel
+  HD/UHD/Iris or basic adapters, and on every later start of a PC where no usable
+  card was found, the engine skips its graphics check (which loads the CUDA and
+  Vulkan libraries from the pendrive and can take a minute).
+* **Fast decoding (MTP).** qwen3.5 has extra layers that guess the next tokens; the
+  model checks every guess, so the answer is exactly what it would write anyway,
+  only faster. It is on for processors with AVX2 and 4 or more cores (Intel Core
+  4th generation and newer, AMD Ryzen); on older or 2-core processors checking
+  guesses would cost more than it saves, so it stays off. If it ever fails on a
+  PC, ru switches it off there and asks again. `ru status` shows the choice.
+* **Fast start of ru itself.** The knowledge base (156 solved examples, 12 topics,
+  67 library functions) is kept ready in `brain\kb_cache.mat`: one file read instead
+  of about 250 small ones on the pendrive (rebuilt automatically when anything
+  changes). `ru status`, usually the first command, also starts loading the model in
+  the background, and shows how long the first load took on that PC (slow: use a
+  blue USB 3 port).
+* **Short prompts.** On a processor, reading the prompt takes most of the time.
+  ru sends the full documentation only of the library functions the problem needs
+  (the methods it names and those the closest solved examples use), about a
+  quarter less text, with no accuracy cost: all function names are always listed,
+  and a failed call gets that function's full documentation with the retry.
 * **Waiting.** A one-line progress note (`ru: writing code ...`) is shown and
-  erased again. Timeouts are set from this PC's measured speed, so a slow PC is
-  not cut off.
+  erased again (MATLAB R2025a and newer cannot erase text, so there it stays as one
+  line). Timeouts are set from this PC's measured speed, so a slow PC is not cut off.
 
 **Before you start on a lab PC:** double-click `Matlab.ru\ru_prep.bat` (or type
 `ru prep` in MATLAB). It shows the free memory, lists your own heavy programs
@@ -118,6 +154,9 @@ no settings.
 | Windows 10 / 11 | works |
 | Windows 7 / 8.1 | the AI engine cannot run (Ollama needs Windows 10). ru still runs the verified solutions and shows the closest solved example for other problems. Or run the engine on your own laptop in the same network and connect: `ru host <laptop IP>` |
 | MATLAB R2016b - R2019b | works; ru tells the AI which newer functions this MATLAB lacks, and converts "double-quoted" strings for R2016b |
+| MATLAB R2025a and newer (new desktop, no Java at start) | works: the paste box, the background model loading and `ru img` from the clipboard use no Java there |
+| A proxy set in Windows or in MATLAB's preferences | ru notices that MATLAB's web functions cannot reach the engine and talks to it through Windows' curl without the proxy |
+| USB drives read-only (lab policy) | ru works; its working files go to the PC's temp folder for that session |
 | MATLAB older than R2016b | not supported (no JSON functions, no local functions in scripts) |
 | Antivirus / lab policy blocks programs on USB drives | ru detects it and says so; it does not try to get around it. Verified solutions still work |
 
@@ -125,16 +164,20 @@ no settings.
 
 | Model | Download | RAM needed | Reads images | Notes |
 |---|---|---|---|---|
-| qwen3.5:4b | 3.4 GB | 8 GB | yes | **recommended** |
-| qwen2.5-coder:3b | 1.9 GB | 6 GB | no | already on your pendrive (weights file above) |
-| qwen3.5:2b | 2.7 GB | 4–6 GB | yes | weak PCs |
+| qwen3.5:9b | 6.6 GB | 16 GB (about 9 GB free) | yes | **default**, strongest; needs exFAT/NTFS |
+| qwen2.5-coder:3b | 1.9 GB | 6 GB | no | small and fast: `ru model coder` |
+| qwen3.5:4b | 3.4 GB | 8 GB | yes | medium |
 | qwen2.5-coder:7b | 4.7 GB | 16 GB | no | needs exFAT/NTFS |
-| qwen3.5:9b | 6.6 GB | 16 GB | yes | strongest; needs exFAT/NTFS |
+| qwen3.5:2b | 2.7 GB | 4–6 GB | yes | weak PCs |
 
-`ru` picks the best installed model automatically. Force one with
-`ru model qwen2.5-coder:3b` (text) or `ru vision qwen3.5:4b` (images);
-`ru model auto` goes back to automatic. It also uses models from an Ollama
-installed on the PC.
+**Default on every PC: the strongest installed model** (qwen3.5:9b when it is on
+the pendrive), for problems and for `ru img`, whatever the free memory; if the
+memory looks too small ru says so once but does not switch. A smaller model is
+used only when you choose it: `ru model qwen2.5-coder:3b` (or `ru model coder`).
+That choice is kept **for that PC only**, so other PCs keep using 9b;
+`ru model auto` goes back to 9b. A misspelled name is refused with a suggestion.
+Only the models in this folder's `model` subfolder are used (and a PC on the network
+only when you connect to it with `ru host <IP>`).
 
 ## Commands
 
@@ -150,6 +193,8 @@ installed on the PC.
 | `ru fix [note]` | find the last error in *your* Command Window work and fix it |
 | `ru again [hint]` | solve the last problem again with another approach |
 | `ru think <problem>` | step-by-step reasoning mode (slower; qwen3.5 models) |
+| `ru sure <problem>` | solve, then check the answer with an independent second solution |
+| `ru sure auto \| on \| off` | double-check AI answers automatically: auto (default) when it takes under ~2 min on the PC |
 | `ru ai <problem>` | skip the stored verified solutions and ask the AI |
 | `ru history [n]` / `ru new` | show / clear the conversation memory |
 | `ru remember <rule>` / `ru rules` | permanent rules, e.g. `ru remember my student ID is 1904032` |
@@ -166,10 +211,14 @@ that contain them type just `ru` and paste into the box.
 
 ## How ru avoids wrong answers
 
-1. **Verified solutions first.** `ru_kb/examples` holds 125 solved problems from
-   the CE206 slides, the final-quiz solution (set A) and the Chapra practice
-   problems. If you paste one of them (same numbers, same method), ru runs the
-   stored, checked solution instead of asking the AI.
+1. **Verified solutions first.** `ru_kb/examples` holds 156 solved problems from
+   the CE206 slides, the final-quiz solution (set A), the class solution sheets
+   (Integration, Differentiation, Curve fitting and Interpolation) and the Chapra
+   practice problems. If you paste one of them (same numbers, same method), ru runs
+   the stored, checked solution instead of asking the AI. Text copied from a PDF
+   works as it is (`10^3` pasted as `103`, `h^2` as `h2`), and a problem whose data
+   are only in its figure is recognised by its number: `5.11 A beam is loaded as
+   shown in Fig. P5.11 ...`. Change any number or the method and the AI solves it.
 2. **Grounding.** For other problems the AI receives the closest solved examples,
    a cheat sheet for the topic and the documentation of the tested solver library
    (`ru_lib`: bisection, false position, Newton, secant, Gauss/LU/Thomas,
@@ -178,7 +227,17 @@ that contain them type just `ru` and paste into the box.
 3. **Everything is executed.** The script runs in MATLAB; errors go back to the AI
    with targeted hints (up to 4 attempts; when it repeats an error it restarts
    without the example that misled it).
-4. **Silent checks before accepting a result** (ru does them itself; the code
+4. **Every part is answered.** When the problem has parts (a), (b), (c) ... that ask for
+   something, the output must show each of them; a missing part goes back to the AI.
+5. **Thinking when stuck.** When two attempts fail, the third one uses qwen3.5's
+   step-by-step reasoning (same context, so the model is not reloaded).
+6. **Independent double-check** (`ru sure`; automatic when the PC is fast enough to
+   do it in under ~2 minutes). A second solution is written from scratch, run in a
+   private workspace (your variables are not touched) and its numbers are compared
+   with the first. If they disagree, the AI reviews both, reasoning step by step,
+   and the corrected script is used, with a note; a problem with random numbers is
+   not double-checked.
+7. **Silent checks before accepting a result** (ru does them itself; the code
    stays short and nothing extra is printed):
    * code that calls functions which do not exist on this computer is rejected
      (catches invented functions and missing toolboxes);
@@ -219,7 +278,7 @@ Matlab.ru\            <- copy this folder to the pendrive
   memory.txt          your permanent rules
   ru_lib\             tested numerical-methods library (used by the AI)
   ru_kb\topics\       cheat sheets per chapter
-  ru_kb\examples\     125 verified solved examples
+  ru_kb\examples\     156 verified solved examples
   ru_tests\           library tests
   Endfiles\           your own course M-files (ru can use them: "use my bisection function")
   model\              AI models (Ollama format); weights are not in git
@@ -252,11 +311,13 @@ Then run `ru test`. Examples with `% SELFTEST: skip` (they need data files) are 
 | Symptom | Fix |
 |---|---|
 | `No AI model is available` | `ru status`; run `setup_ru.bat` on a PC with internet |
-| `model ... INCOMPLETE - missing file(s)` | copy the missing `sha256-...` blob into `model\blobs` or re-run `setup_ru.bat` |
+| `... is not in the running AI engine` | `ru status` shows the models folder ru reads and what is in it; download the model with `setup_ru.bat` into **this** folder |
+| `model ... INCOMPLETE - missing file(s)` / `... is incomplete in ...` | a model file is missing or was cut short (interrupted download, failed copy to another drive): re-run `setup_ru.bat` (it resumes), or copy the `model` folder again |
+| `port 11435 is used by another program` | restart the PC (a stuck engine of another copy, run as administrator) |
 | very slow / timeout | `ru status` shows the speed on this PC; close other programs; `ru model qwen2.5-coder:3b` |
 | wrong or garbage answers on one PC only | `ru gpu off` (a bad graphics driver); `ru gpu auto` to try the card again |
 | want to see what ru did | `ru verbose on`; the full log is `brain\ru_log.txt`, the engine's is `brain\engine.log` |
-| `ru img` says no vision model | install `qwen3.5:4b` with `setup_ru.bat` |
+| `ru img` says no vision model | download `qwen3.5:9b` with `setup_ru.bat` |
 | wrong numbers read from a screenshot | correct them in the check box, or paste the text with `ru` |
 | a result looks wrong | `ru again`, `ru think <problem>`, or state the method and all numbers explicitly |
 

@@ -1,10 +1,10 @@
 function [a, r2, syx] = fit_general(Z, y)
-%FIT_GENERAL  General linear least squares y = Z*a + e via the normal equations.
+%FIT_GENERAL  General linear least squares y = Z*a + e (solves the normal equations Z'*Z*a = Z'*y by QR).
 %   [a, r2, syx] = fit_general(Z, y)
 %   Z      m-by-p design (basis-function) matrix, one row per data point,
 %          e.g. Z = [ones(size(v)) v v.^2] fits a 2nd order polynomial in v
 %   y      m-by-1 (or 1-by-m) observed values
-%   a      p-by-1 coefficients, a = (Z'*Z)\(Z'*y); a(1) multiplies Z(:,1), ...
+%   a      p-by-1 coefficients (least squares, a = Z\y; equals (Z'*Z)\(Z'*y)); a(1) multiplies Z(:,1), ...
 %   r2     coefficient of determination, r2 = (St-Sr)/St
 %   syx    standard error, syx = sqrt(Sr/(m-p)); 0 when m <= p (exact fit)
 %   Call without outputs to print a, r2 and syx.
@@ -20,12 +20,11 @@ if length(y) ~= m
         'FIT_GENERAL: Z has %d rows but y has %d elements; they must match.', m, length(y));
 end
 
-ZtZ = Z'*Z;
-if rank(ZtZ) < p
+if rank(Z) < p
     error('ru_lib:fit_general:singular', ...
         'FIT_GENERAL: Z''*Z is singular (columns of Z are linearly dependent); use fewer basis functions.');
 end
-a = ZtZ\(Z'*y);
+a = Z\y;                       % least squares by QR: same a as (Z'*Z)\(Z'*y), without squaring cond(Z)
 
 yhat = Z*a;
 St = sum((y-mean(y)).^2);

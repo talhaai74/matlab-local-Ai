@@ -11,6 +11,8 @@ function varargout = ru(varargin)
 %   ru fix [note]         fix the last error from your own Command Window work
 %   ru again [hint]       solve the last problem again with another approach
 %   ru think <problem>    solve with step-by-step reasoning (slower; qwen3.5)
+%   ru sure <problem>     solve, then check with an independent second solution
+%   ru sure [auto|on|off] double-check AI answers automatically (auto: when fast)
 %   ru ai <problem>       skip the stored slide solutions and ask the AI
 %   ru history [n]        show the conversation memory;  ru new  clears it
 %   ru remember <rule>    keep a rule forever, e.g. ru remember my student ID is 2104055
@@ -18,17 +20,18 @@ function varargout = ru(varargin)
 %   ru last               show the last code;  ru save <name>  save it as <name>.m
 %   ru status             this PC (processor, memory, graphics), AI engine, models, speed
 %   ru start | ru stop    start / stop the AI engine (Ollama) of this pendrive
-%   ru model [name|auto]  choose the text model;  ru vision [name|auto]  image model
+%   ru model [name|auto]  default on every PC: the strongest installed model (qwen3.5:9b);
+%                         a smaller one only when you choose it for this PC, e.g.
+%                         ru model qwen2.5-coder:3b (or ru model coder); ru model auto = back
 %   ru gpu [auto|on|off]  graphics card use (auto: dedicated cards yes, integrated no)
 %   ru verbose [on|off]   off (default): only the code and MATLAB's output are shown
 %   ru prep               free memory: close your browsers, chat and music programs
 %                         (runs ru_prep.bat; asks nothing, keeps the ru engine)
 %   ru list | ru test | ru help
 %
-%   ru adapts to each PC by itself: it measures the free memory, uses the strongest
-%   model that fits, puts the model on the graphics card and the processor together
-%   when there is a usable card, and falls back to the processor when a graphics
-%   driver fails.
+%   ru adapts to each PC by itself: it uses the strongest installed model, puts it on
+%   the graphics card and the processor together when there is a usable card, and
+%   falls back to the processor when a graphics driver fails.
 %
 %   Long problems, or text with quotes, commas or several lines: type just  ru
 %   and paste the text into the box, or call  ru('...')  with the text in quotes.
@@ -44,13 +47,28 @@ end
 restoreErr = onCleanup(@() local_restoreLastErr(userLastErr));
 local_userError(userLastErr);
 root = fileparts(mfilename('fullpath'));
+% Any unexpected error inside ru becomes one short message (details in brain\ru_log.txt) instead of a
+% MATLAB error listing in the middle of the work.
+try
+    if nargout == 0
+        local_main(root, varargin{:});
+    else
+        [varargout{1:nargout}] = local_main(root, varargin{:});
+    end
+catch ME
+    local_internalError(root, ME);
+end
+end
+
+function varargout = local_main(root, varargin)
 local_setup(root);
 args = local_args(varargin);
 if numel(args) == 1
     % ru('remember my ID is ...') behaves like the command form  ru remember my ID is ...
     tok = regexp(args{1}, '^\s*(\S+)\s+(.+)$', 'tokens', 'once');
     if ~isempty(tok) && any(strcmpi(tok{1}, {'remember', 'ask', 'explain', 'fix', 'again', 'retry', 'think', ...
-            'ai', 'img', 'image', 'shot', 'screenshot', 'history', 'model', 'vision', 'host', 'save', '--retrieve'}))
+            'ai', 'img', 'image', 'shot', 'screenshot', 'history', 'model', 'vision', 'host', 'save', '--retrieve', ...
+            'verbose', 'gpu', 'sure'}))
         args = {tok{1}, tok{2}};
     end
 end
@@ -90,6 +108,8 @@ switch cmd
             local_busy('');
             if isempty(E.model)
                 local_engineHelp();
+            elseif local_isLoaded(E)
+                fprintf('[ru] Engine ready: %s (%s), already in memory.\n', E.model, E.why);
             else
                 local_warmup(root, E, local_systemStatic(root, local_env(), local_kb(root)));
                 fprintf('[ru] Engine ready: %s (%s). It is loading into memory in the background.\n', E.model, E.why);
@@ -108,7 +128,7 @@ switch cmd
         end
     case '--compact'
         % ru('--compact', code, problem): the code as ru shows and runs it (used by ru_selftest).
-        if nargin >= 3
+        if numel(varargin) >= 3
             varargout{1} = local_compactCode(varargin{2}, varargin{3});
             return
         end
@@ -184,6 +204,15 @@ switch cmd
             local_route(root, rest, opts);
             return
         end
+    case 'sure'
+        if alone || any(strcmpi(rest, {'on', 'off', 'auto'}))
+            local_settingCommand(root, 'sure', rest);
+            return
+        end
+        opts.sure = true;
+        opts.forceSolve = true;
+        local_route(root, rest, opts);
+        return
     case {'history', 'memory', 'conversation'}
         if numel(args) <= 2
             local_showHistory(root, rest);
@@ -213,6 +242,25 @@ end
 % Setup, input and small commands
 % =====================================================================
 
+function local_internalError(root, ME)
+local_busy('');
+where = '';
+if ~strncmp(ME.identifier, 'ru:', 3) && ~isempty(ME.stack)
+    where = sprintf(' (in %s, line %d)', ME.stack(1).name, ME.stack(1).line);
+end
+fprintf(2, '[ru] Stopped: %s%s\n', ME.message, where);
+fprintf(2, '[ru] Type the command again, or check with  ru status . Details: brain\\ru_log.txt\n');
+try
+    rep = getReport(ME, 'extended', 'hyperlinks', 'off');
+catch
+    rep = ME.message;
+    for k = 1:numel(ME.stack)
+        rep = sprintf('%s\n  at %s line %d', rep, ME.stack(k).name, ME.stack(k).line);
+    end
+end
+local_log(root, sprintf('INTERNAL ERROR:\n%s', rep));
+end
+
 function e = local_userError(set)
 % Remembers the user's last error message for "ru fix".
 persistent E
@@ -234,7 +282,7 @@ end
 
 function o = local_opts()
 o = struct('forceAI', false, 'forceSolve', false, 'think', false, 'again', false, ...
-    'label', '', 'extraContext', '', 'turnPrompt', '', 'keepAll', false);
+    'label', '', 'extraContext', '', 'turnPrompt', '', 'keepAll', false, 'sure', false);
 end
 
 function args = local_args(in)
@@ -256,12 +304,35 @@ args = args(~cellfun(@(s) isempty(strtrim(s)), args));
 end
 
 function local_setup(root)
-dirs = {root, fullfile(root, 'ru_lib')};
+% Put this folder and its ru_lib on the MATLAB path. Another copy of ru on the path (an old folder,
+% another drive) is taken off it for this session, so its older library files cannot be used instead.
+persistent done
+if ~isempty(done) && strcmp(done, root)
+    return
+end
+lib = fullfile(root, 'ru_lib');
+try
+    p = strsplit(path, pathsep);
+    for k = 1:numel(p)
+        d = regexprep(p{k}, '[\\/]+$', '');
+        [parent, name] = fileparts(d);
+        if strcmpi(d, lib) || ~strcmpi(name, 'ru_lib') || exist(fullfile(d, 'root_bisection.m'), 'file') ~= 2
+            continue
+        end
+        rmpath(p{k});
+        if local_onPath(parent) && ~strcmpi(parent, root)
+            rmpath(parent);
+        end
+    end
+catch
+end
+dirs = {root, lib};
 for k = 1:numel(dirs)
     if exist(dirs{k}, 'dir') == 7 && ~local_onPath(dirs{k})
         addpath(dirs{k}, '-end');
     end
 end
+done = root;
 end
 
 function tf = local_onPath(d)
@@ -271,10 +342,83 @@ tf = any(strcmpi(p, d));
 end
 
 function d = local_brain(root)
-d = fullfile(root, 'brain');
-if exist(d, 'dir') ~= 7
-    mkdir(d);
+% ru's working folder: <ru folder>\brain on the pendrive. Only when the pendrive cannot be written
+% here (a lab policy that makes USB drives read-only) a folder in this PC's temp folder is used for
+% this session, starting from a copy of the pendrive's settings.
+persistent R D
+if ~isempty(R) && strcmp(R, root) && exist(D, 'dir') == 7
+    d = D;
+    return
 end
+d = fullfile(root, 'brain');
+if local_canWrite(d)
+    R = root;
+    D = d;
+    return
+end
+alt = fullfile(tempdir, ['ru_brain_' local_hashText(root)]);
+if exist(alt, 'dir') ~= 7
+    try
+        mkdir(alt);
+        f = [dir(fullfile(d, '*.txt')); dir(fullfile(d, '*.json'))];
+        for k = 1:numel(f)
+            copyfile(fullfile(d, f(k).name), alt);
+        end
+    catch
+    end
+end
+if exist(alt, 'dir') ~= 7
+    d = fullfile(root, 'brain');                 % nothing writable at all: writes will report it
+    return
+end
+local_err(['[ru] The pendrive cannot be written on this PC (write-protected or a lab policy). ru keeps its ' ...
+    'working files in %s for this session.\n'], alt);
+R = root;
+D = alt;
+d = alt;
+end
+
+function ok = local_canWrite(d)
+ok = false;
+try
+    if exist(d, 'dir') ~= 7
+        mkdir(d);
+    end
+    probe = fullfile(d, sprintf('.write_test_%d.tmp', floor(rand * 1e9)));
+    fid = fopen(probe, 'w');
+    if fid > 0
+        fclose(fid);
+        delete(probe);
+        ok = true;
+    end
+catch
+end
+end
+
+function h = local_hashText(t)
+% Short, stable name for a text (a folder path).
+v = double(lower(t));
+h = 5381;
+for k = 1:numel(v)
+    h = mod(h * 33 + v(k), 4294967291);
+end
+h = sprintf('%08x', h);
+end
+
+function d = local_workDir(root, name)
+% A subfolder of ru's working folder (created when missing): tmp, home, run.
+d = fullfile(local_brain(root), name);
+if exist(d, 'dir') ~= 7
+    try
+        mkdir(d);
+    catch
+    end
+end
+end
+
+function f = local_tmpFile(root, ext)
+% A temporary file in ru's own folder (not in the PC's temp folder).
+f = fullfile(local_workDir(root, 'tmp'), sprintf('ru_%s_%d%s', datestr(now, 'HHMMSSFFF'), floor(rand * 1e6), ext));
 end
 
 function txt = local_clipboard()
@@ -289,11 +433,54 @@ end
 end
 
 function tf = local_desktop()
+% MATLAB with windows (dialog boxes can be shown). MATLAB R2025a and newer have a desktop that is not
+% Java-based, where usejava('desktop') is false, so that is not the only test.
+persistent T
+if ~isempty(T)
+    tf = T;
+    return
+end
 tf = false;
+if exist('OCTAVE_VERSION', 'builtin')
+    T = tf;
+    return
+end
 try
-    tf = usejava('desktop') && ~exist('OCTAVE_VERSION', 'builtin');
+    if isdeployed || batchStartupOptionUsed
+        T = tf;
+        return
+    end
 catch
 end
+try
+    tf = usejava('desktop');
+catch
+end
+if ~tf && local_newDesktop()
+    tf = true;                                     % try the box; if it cannot open, the command line is used
+    try
+        tf = logical(feature('ShowFigureWindows'));  % false only with -nodisplay
+    catch
+    end
+end
+tf = logical(tf);
+T = tf;
+end
+
+function tf = local_newDesktop()
+% MATLAB R2025a or newer: web-based desktop, Java only loaded on demand, no backspaces in the
+% Command Window.
+persistent T
+if isempty(T)
+    T = false;
+    if ~exist('OCTAVE_VERSION', 'builtin')
+        try
+            T = sscanf(version, '%d', 1) >= 25;
+        catch
+        end
+    end
+end
+tf = T;
 end
 
 function txt = local_askProblem()
@@ -304,34 +491,44 @@ if local_desktop()
         def = '';
     end
     lines = regexp(strrep(def, char(13), ''), '\n', 'split');
+    shown = false;
     a = {};
     try
         a = inputdlg({['Paste or type the problem (text, equations, tables; several lines are fine). ' ...
             'Edit it if needed, then press OK:']}, 'ru', [22 130], {char(lines)});
+        shown = true;
     catch
         try
             a = inputdlg({'Paste or type the problem, then press OK:'}, 'ru', [22 130]);
+            shown = true;
         catch
-            a = {};
         end
     end
-    if isempty(a)
+    if shown
+        if isempty(a)
+            return                               % Cancel
+        end
+        v = a{1};
+        if size(v, 1) > 1
+            txt = strjoin(cellstr(v)', char(10));
+        else
+            txt = v;
+        end
         return
     end
-    v = a{1};
-    if size(v, 1) > 1
-        txt = strjoin(cellstr(v)', char(10));
-    else
-        txt = v;
-    end
-else
-    clip = strtrim(local_clipboard());
-    if ~isempty(clip)
-        fprintf('[ru] Using the problem on the clipboard:\n%s\n', local_preview(clip, 1200));
+end
+% No dialog box possible: never solve the clipboard without asking (it may hold something else).
+clip = strtrim(local_clipboard());
+if ~isempty(clip)
+    fprintf('[ru] On the clipboard:\n%s\n', local_preview(clip, 1200));
+    r = input('ru> Press Enter to solve this, or type the problem on one line: ', 's');
+    if isempty(strtrim(r))
         txt = clip;
     else
-        txt = input('ru> Type the problem on one line: ', 's');
+        txt = r;
     end
+else
+    txt = input('ru> Type the problem on one line: ', 's');
 end
 end
 
@@ -555,11 +752,13 @@ kb = local_kb(root);
 env = local_env();
 conv = local_convLoad(root);
 follow = local_isFollowUp(prompt, conv);
+ctx = local_retrieve(kb, prompt);
+if follow && ctx.direct > 0 && ~opts.forceAI
+    follow = false;                  % a verified problem on its own is never a follow-up
+end
 if follow
     ctx = local_retrieve(kb, [conv{end}.prompt char(10) prompt]);
     ctx.direct = 0;
-else
-    ctx = local_retrieve(kb, prompt);
 end
 turnPrompt = prompt;
 if ~isempty(opts.turnPrompt)
@@ -601,8 +800,9 @@ end
 numPredict = 2048;
 numCtx = E.ctx;
 if think
-    numCtx = local_thinkCtx(root, E);
-    numPredict = min(12000, floor(numCtx / 2));
+    % Same context as every other request (a different one makes the engine load the whole model again,
+    % twice: now and at the next normal question); the reasoning gets up to 10k tokens of it.
+    numPredict = max(2048, min(10240, numCtx - 6144));
 end
 baseMsgs = local_buildSolveMessages(root, prompt, kb, env, ctx, conv, follow, opts, numCtx, numPredict);
 ctxNoEx = ctx;
@@ -641,7 +841,18 @@ for attempt = 1:maxAttempts
         local_busy(sprintf('ru: correcting it (attempt %d of %d) ...', attempt, maxAttempts));
     end
     local_say(root, '[ru] Asking %s (attempt %d of %d)...\n', E.model, attempt, maxAttempts);
-    [reply, cut, err, E] = local_llm(root, E, msgs, temps(attempt), numPredict, think, numCtx);
+    useThink = think;
+    nPredict = numPredict;
+    if ~think && attempt == 3 && any(strcmp(E.caps, 'thinking'))
+        % Two attempts failed: the third one reasons step by step first (same context: no reload).
+        tp = local_thinkPredict(msgs, numCtx);
+        if tp > 0
+            useThink = true;
+            nPredict = tp;
+            local_busy(sprintf('ru: thinking it through (attempt %d of %d) ...', attempt, maxAttempts));
+        end
+    end
+    [reply, cut, err, E] = local_llm(root, E, msgs, temps(attempt), nPredict, useThink, numCtx);
     if ~isempty(err)
         local_log(root, ['ENGINE ERROR: ' err]);
         if isempty(best.code)
@@ -663,7 +874,12 @@ for attempt = 1:maxAttempts
                 best = struct('code', code, 'output', info.output, 'warnings', {warnings});
             end
             if isempty(feedback)
-                local_finish(root, turnPrompt, code, info.output, t0, sprintf('AI attempt %d', attempt), warnings);
+                how = sprintf('AI attempt %d', attempt);
+                if local_wantDoubleCheck(root, E, opts, follow, code, info)
+                    [code, info, warnings, how] = local_doubleCheck(root, E, kb, prompt, baseMsgs, code, info, ...
+                        warnings, numCtx, how, ctx.topics, verbose);
+                end
+                local_finish(root, turnPrompt, code, info.output, t0, how, warnings);
                 ok = true;
                 return
             end
@@ -743,16 +959,219 @@ local_convAdd(root, 'solve', turnPrompt, prevCode, 'FAILED: no working code.', f
 local_log(root, 'RESULT: FAILED');
 end
 
-function numCtx = local_thinkCtx(root, E)
-% Thinking needs room for a long answer: a 32k context when the memory allows it.
-numCtx = E.ctx;
-if E.maxCtx < 32768
+function n = local_thinkPredict(msgs, numCtx)
+% Tokens left for reasoning + answer in the fixed context (0 = too little room to think).
+chars = sum(cellfun(@(m) numel(m.content), msgs));
+n = min(10240, numCtx - ceil(chars / 3) - 512);
+if n < 2048
+    n = 0;
+end
+end
+
+function tf = local_wantDoubleCheck(root, E, opts, follow, code, info)
+% Double-check an AI-written answer with an independent solution? Always with  ru sure ; with
+% ru sure auto (default) when this PC writes fast enough that it takes under ~2 minutes.
+tf = false;
+mode = lower(local_setting(root, 'sure', 'auto'));
+if ~opts.sure && (strcmp(mode, 'off') || follow)
     return
 end
-mem = local_memBudget(root, {E.host});
-need = local_memNeed(E.model, E.bytes, 32768);
-if ~local_isLocalHost(E.host) || isnan(mem.avail) || need <= mem.avail + local_memNeed(E.model, E.bytes, E.ctx)
-    numCtx = 32768;
+c = local_stripCode(code);
+if ~isempty(regexp(c, '(?<![\w.])(rand|randn|randi|randperm|rng)\s*\(', 'once')) || isempty(local_outputNumbers(info.output))
+    return                                     % random results or nothing numeric to compare
+end
+if opts.sure || strcmp(mode, 'on')
+    tf = true;
+    return
+end
+tg = local_modelStat(root, E.model, 'tg');
+tf = tg > 0 && (numel(code) / 3 + 40) / tg <= 120;
+end
+
+function [code, info, warnings, how] = local_doubleCheck(root, E, kb, prompt, baseMsgs, code, info, warnings, ...
+    numCtx, how, topics, verbose)
+% Write a second solution independently (the same prompt, which the engine already has in memory,
+% at a higher temperature), run it in a private workspace and compare the printed numbers. When they
+% disagree, the model reviews both (thinking when it can) and writes the corrected script.
+local_busy('ru: double-checking with an independent solution ...');
+[reply, ~, err] = local_llm(root, E, baseMsgs, 0.7, 2048, false, numCtx);
+if ~isempty(err)
+    return
+end
+code2 = local_compactCode(local_arrange(local_sanitize(local_extractCode(reply))), prompt);
+if isempty(strtrim(code2)) || ~isempty(local_precheck(code2, kb))
+    return
+end
+[ok2, out2] = local_runIsolated(root, code2);
+if ~ok2
+    return
+end
+same = local_sameResults(info.output, out2);
+if isnan(same)
+    return
+end
+if same
+    local_log(root, sprintf('DOUBLE-CHECK: an independent solution printed the same results.\nCODE 2:\n%s', code2));
+    how = [how ', confirmed by an independent solution'];
+    return
+end
+local_log(root, sprintf('DOUBLE-CHECK: DISAGREE.\nCODE 2:\n%s\nOUTPUT 2:\n%s', code2, out2));
+local_busy('ru: the two solutions disagree; checking which one is right ...');
+fb = sprintf(['Your script printed:\n%s\n\nAn independent script for the same problem printed:\n%s\n\nIts code:\n' ...
+    '```matlab\n%s\n```\n\nThe results disagree, so at least one script is wrong. Check every formula, unit, ' ...
+    'number and step of both scripts against the PROBLEM, decide which is correct, and reply with the correct ' ...
+    'complete script.'], local_preview(info.output, 1500), local_preview(out2, 1500), code2);
+msgs = [baseMsgs, {local_msg('assistant', ['```matlab' char(10) code char(10) '```']), local_msg('user', fb)}];
+think = any(strcmp(E.caps, 'thinking'));
+nPredict = 2048;
+if think
+    nPredict = local_thinkPredict(msgs, numCtx);
+    think = nPredict > 0;
+    if ~think
+        nPredict = 2048;
+    end
+end
+[reply3, ~, err3] = local_llm(root, E, msgs, 0.3, nPredict, think, numCtx);
+code3 = '';
+if isempty(err3)
+    code3 = local_compactCode(local_arrange(local_sanitize(local_extractCode(reply3))), prompt);
+end
+if isempty(strtrim(code3)) || ~isempty(local_precheck(code3, kb))
+    warnings{end+1} = 'An independent solution printed different numbers: check this result carefully.';
+    return
+end
+[ok3, info3, code3] = local_runCode(root, kb, code3, 'rechecked solution', verbose);
+fb3 = 'failed';
+if ok3
+    [fb3, w3] = local_quality(info3, prompt, code3, 99, 99, true, topics);
+end
+if ~isempty(fb3)
+    % The review failed: restore the first solution (its variables) and warn.
+    [~, info, code] = local_runCode(root, kb, code, 'first solution', false);
+    warnings{end+1} = 'An independent solution printed different numbers: check this result carefully.';
+    return
+end
+agreeFirst = isequal(local_sameResults(info.output, info3.output), true);
+agreeSecond = isequal(local_sameResults(out2, info3.output), true);
+code = code3;
+info = info3;
+warnings = w3;
+if agreeFirst
+    how = [how ', confirmed after a second opinion'];
+elseif agreeSecond
+    how = [how ', corrected by an independent solution'];
+    warnings{end+1} = 'ru corrected its first solution: an independent solution disagreed, and the review agreed with it.';
+else
+    how = [how ', re-derived after two solutions disagreed'];
+    warnings{end+1} = 'Two independent solutions disagreed; this is the re-derived one. Check the result carefully.';
+end
+end
+
+function [ok, out] = local_runIsolated(root, code)
+% Run a script in a private workspace (not the user's), printing nothing; new figures are closed.
+ok = false;
+out = '';
+runDir = local_workDir(root, 'run');
+if ~local_onPath(runDir)
+    addpath(runDir, '-end');
+end
+name = sprintf('ru_check_%s_%03d', datestr(now, 'HHMMSSFFF'), randi(999));
+file = fullfile(runDir, [name '.m']);
+try
+    local_writeText(file, [code char(10)]);
+    rehash;
+catch
+    return
+end
+figs = local_figures();
+try
+    out = local_evalPrivate(name);
+    ok = true;
+catch err
+    out = err.message;
+end
+local_closeNewFigures(figs);
+try
+    delete(file);
+catch
+end
+end
+
+function ru__out = local_evalPrivate(ru__name)
+% The script runs in this function's own workspace.
+ru__out = evalc(ru__name);
+end
+
+function r = local_sameResults(o1, o2)
+% true when the numbers printed by one output are (nearly all) printed by the other, false when not,
+% NaN when there is nothing to compare. The output with fewer numbers is looked up in the other one.
+[v1, d1] = local_outputNumbers(o1);
+[v2, d2] = local_outputNumbers(o2);
+r = NaN;
+if isempty(v1) || isempty(v2)
+    return
+end
+if numel(v1) > numel(v2)
+    [v1, v2] = deal(v2, v1);
+    [d1, d2] = deal(d2, d1);
+end
+hit = 0;
+for k = 1:numel(v1)
+    tol = max(max(2e-3 * abs(v1(k)), 0.6 * 10^(-d1(k))), 0.6 * 10.^(-d2) + 2e-3 * abs(v2));
+    if any(abs(v2 - v1(k)) <= max(tol, 1e-12))
+        hit = hit + 1;
+    end
+end
+r = hit >= 0.8 * numel(v1);
+end
+
+function [v, dec] = local_outputNumbers(out)
+% Numbers printed by a script (with how many decimals they were printed); MATLAB's common scale
+% factor ("1.0e+03 *") is applied; small whole numbers (labels, counters) are left out.
+v = zeros(1, 0);
+dec = zeros(1, 0);
+if isempty(out)
+    return
+end
+lines = regexp(strrep(out, char(13), ''), '\n', 'split');
+scale = 0;
+for i = 1:numel(lines)
+    L = lines{i};
+    sc = regexp(L, '^\s*1\.0+e([+-]\d+)\s*\*\s*$', 'tokens', 'once');
+    if ~isempty(sc)
+        scale = str2double(sc{1});
+        continue
+    end
+    if isempty(strtrim(L)) && scale ~= 0 && i > 1 && ~isempty(strtrim(lines{i-1})) && ...
+            isempty(regexp(lines{i-1}, 'e[+-]\d+\s*\*', 'once'))
+        scale = 0;                                   % end of the scaled block
+        continue
+    end
+    tok = regexp(L, '(?<![A-Za-z_\d.])[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?', 'match');
+    for k = 1:numel(tok)
+        x = str2double(tok{k});
+        if isnan(x) || isinf(x)
+            continue
+        end
+        m = regexp(tok{k}, '\.(\d*)', 'tokens', 'once');
+        dd = 0;
+        if ~isempty(m)
+            dd = numel(m{1});
+        end
+        ex = regexp(tok{k}, '[eE]([-+]?\d+)', 'tokens', 'once');
+        if ~isempty(ex)
+            dd = dd - str2double(ex{1});
+        end
+        if scale ~= 0
+            x = x * 10^scale;
+            dd = dd - scale;
+        end
+        if isempty(m) && isempty(ex) && abs(x) <= 10 && scale == 0
+            continue
+        end
+        v(end+1) = x; %#ok<AGROW>
+        dec(end+1) = dd; %#ok<AGROW>
+    end
 end
 end
 
@@ -883,6 +1302,16 @@ if isempty(strtrim(out)) && ~hasPlot
         'assignment or print it with fprintf (value and unit), and print the iteration table when iterations are asked for.'];
     return
 end
+missingParts = local_missingParts(prompt, out);
+if ~isempty(missingParts)
+    if attempt < maxAttempts
+        feedback = sprintf(['The output shows no result for part %s. Solve EVERY part of the problem, in order, and ' ...
+            'print each part''s label before its results, e.g. disp(''%s''). Rewrite the complete script.'], ...
+            strjoin(missingParts, ', '), missingParts{1});
+        return
+    end
+    warnings{end+1} = sprintf('The output shows nothing for part %s.', strjoin(missingParts, ', '));
+end
 if ~isempty(regexp(out, '(?<![A-Za-z])(NaN|-?Inf)(?![A-Za-z])', 'once'))
     if attempt < maxAttempts - 1
         feedback = ['The printed results contain NaN or Inf, which means a division by zero, a wrong ' ...
@@ -922,6 +1351,48 @@ elseif ~isempty(fb)
     warnings{end+1} = local_firstLine(regexprep(fb, '^Your solution ', 'The solution '));
 end
 warnings = [warnings, w];
+end
+
+function miss = local_missingParts(prompt, out)
+% Parts (a), (b), ... that the problem asks for (their text contains a task word) but the output
+% does not label. Parts that only give information ("(a) For bracketing methods, ...") are skipped.
+miss = {};
+[tok, st] = regexp(prompt, '(?<![A-Za-z0-9])\(([a-h])\)', 'tokens', 'start');
+if numel(tok) < 2
+    [tok, st] = regexp(prompt, '(?<![A-Za-z0-9.])([a-h])[.)]\s+(?=[A-Z])', 'tokens', 'start');
+end
+if numel(tok) < 2
+    return
+end
+letters = cellfun(@(t) t{1}, tok);
+if letters(1) ~= 'a'
+    return
+end
+n = 1;
+while n < numel(letters) && letters(n+1) == letters(n) + 1
+    n = n + 1;
+end
+if n < 2
+    return
+end
+task = ['(?<![a-z])(determine|compute|calculate|find|estimate|evaluate|plot|graph|draw|use|using|solve|show|compare|' ...
+    'fit|predict|write|develop|obtain|derive|express|repeat|perform|employ|apply|test|check|verify|integrate|' ...
+    'differentiate|approximate|interpolate|tabulate|list|print|display|explain|discuss|what|how|which|why)(?![a-z])'];
+o = lower(out);
+for k = 1:n
+    if k < numel(st)
+        body = lower(prompt(st(k):st(k+1)-1));
+    else
+        body = lower(prompt(st(k):end));
+    end
+    if isempty(regexp(body, task, 'once'))
+        continue
+    end
+    L = letters(k);
+    if isempty(regexp(o, ['\(' L '\)|(^|\n)\s*' L '[).:]|part\s*' L '(?![a-z])'], 'once'))
+        miss{end+1} = ['(' L ')']; %#ok<AGROW>
+    end
+end
 end
 
 function [feedback, warnings] = local_resultChecks(prompt, topics, code)
@@ -1367,6 +1838,16 @@ for k = 1:numel(tok)
             found = true;
         end
     end
+    if ~found
+        % A power of ten whose ^ was lost when the text was copied from a PDF: 103 = 10^3, 1014 = 10^14.
+        t10 = regexp(s, '^10(\d{1,2})$', 'tokens', 'once');
+        if ~isempty(t10)
+            e = str2double(t10{1});
+            found = any(abs(cval - 10^e) <= 1e-9 * 10^e) || ...
+                ~isempty(regexp(c, sprintf('10\\s*\\^\\s*\\(?\\s*-?\\s*%d(?!\\d)', e), 'once')) || ...
+                ~isempty(regexp(c, sprintf('\\d[eE][-+]?0*%d(?!\\d)', e), 'once'));
+        end
+    end
     if ~found && ~any(strcmp(missing, s))
         missing{end+1} = s; %#ok<AGROW>
     end
@@ -1774,7 +2255,11 @@ if local_isLoaded(E)
 else
     local_busy(sprintf('ru: loading %s into memory (first use), then answering ...', E.model));
 end
-[reply, ~, err, E] = local_llm(root, E, msgs, 0.3, 1500, think);
+nPredict = 1500;
+if think
+    nPredict = max(2048, min(10240, E.ctx - 4096));    % the reasoning counts too
+end
+[reply, ~, err, E] = local_llm(root, E, msgs, 0.3, nPredict, think);
 local_busy('');
 if ~isempty(err)
     local_err('[ru] AI engine error: %s\n', err);
@@ -2004,25 +2489,30 @@ if isempty(strtrim(text))
     return
 end
 fprintf('\n[ru] Text read from the image:\n%s\n', text);
+shown = false;
 if local_desktop()
     lines = regexp(text, '\n', 'split');
     a = {};
     try
         a = inputdlg({['Check the text read from the image. Fix any wrong number or symbol, add anything missing ' ...
             '(e.g. values shown only in the figure), then press OK:']}, 'ru: check the problem', [24 130], {char(lines)});
+        shown = true;
     catch
     end
-    if isempty(a)
-        fprintf('[ru] Cancelled. (The text is in the conversation memory; ru again will not use it.)\n');
+    if shown && isempty(a)
+        fprintf('[ru] Cancelled.\n');
         return
     end
-    v = a{1};
-    if size(v, 1) > 1
-        text = strjoin(cellstr(v)', char(10));
-    else
-        text = v;
+    if shown
+        v = a{1};
+        if size(v, 1) > 1
+            text = strjoin(cellstr(v)', char(10));
+        else
+            text = v;
+        end
     end
-else
+end
+if ~shown
     fprintf(['[ru] Solving this text. If a number was read wrongly, copy the text above, correct it and use  ' ...
         'ru  (paste box) instead.\n']);
 end
@@ -2034,10 +2524,30 @@ local_route(root, prompt, opts);
 end
 
 function f = local_clipboardImage(root)
-% Save an image on the system clipboard (e.g. a Win+Shift+S screenshot) as PNG.
+% Save an image on the system clipboard (e.g. a Win+Shift+S screenshot) as PNG: with Java in MATLAB
+% R2024b and older, with Windows' own PowerShell otherwise (R2025a+ loads no Java at start).
 f = '';
+if ~exist('OCTAVE_VERSION', 'builtin') && (local_newDesktop() || ~usejava('awt'))
+    if ispc
+        g = fullfile(local_brain(root), 'clipboard_image.png');
+        if exist(g, 'file') == 2
+            delete(g);
+        end
+        cmd = sprintf(['powershell -NoProfile -NonInteractive -STA -Command "Add-Type -AssemblyName ' ...
+            'System.Windows.Forms; $i = [System.Windows.Forms.Clipboard]::GetImage(); if ($i) { ' ...
+            '$i.Save(''%s'', [System.Drawing.Imaging.ImageFormat]::Png) }"'], strrep(g, '''', ''''''));
+        try
+            [~, ~] = system(cmd);
+        catch
+        end
+        if exist(g, 'file') == 2
+            f = g;
+        end
+    end
+    return
+end
 try
-    if exist('OCTAVE_VERSION', 'builtin') || ~usejava('awt')
+    if exist('OCTAVE_VERSION', 'builtin')
         return
     end
     cb = java.awt.Toolkit.getDefaultToolkit().getSystemClipboard();
@@ -2120,13 +2630,16 @@ try
         end
         step = max(1, ceil(max(size(img, 1), size(img, 2)) / 2000));
         img = img(1:step:end, 1:step:end, 1:3);
-        src = [tempname '.png'];
+        src = local_tmpFile(fileparts(mfilename('fullpath')), '.png');
         imwrite(img, src);
     end
     fid = fopen(src, 'r');
     bytes = fread(fid, inf, '*uint8');
     fclose(fid);
     b64 = matlab.net.base64encode(bytes');
+    if ~strcmp(src, file)
+        delete(src);
+    end
 catch
     b64 = '';
 end
@@ -2230,9 +2743,14 @@ q = lower(prompt);
 strong = ~isempty(regexp(q, ['\<(previous|above|earlier|last (problem|question|answer|code|result|one|graph|plot)|' ...
     'same (data|problem|function|values|equation|equations|matrix|system|question)|' ...
     'that (problem|code|result|answer|plot|graph|function)|the code|your code|this code|redo|rerun|re-run|instead)\>'], 'once'));
-weak = ~isempty(regexp(q, ['^\s*(and|also|now|then|next|but|so|what about|how about|ok|okay)\>|\<(it|them|again|' ...
-    'change|modify|update|continue|increase|decrease|more|less|smaller|bigger|larger|explain|why)\>'], 'once'));
-tf = strong || (numel(prompt) < 220 && weak);
+% A short message that starts like a continuation ("now use RK4", "and plot it"), or a short one without
+% data of its own ("why is the error so large?", "change it to 0.1"). A problem that brings its own
+% numbers ("find the root of x^3 - 2x - 5 between 2 and 3 and plot it") is a new problem.
+lead = ~isempty(regexp(q, '^\s*(and|also|now|then|next|but|so|what about|how about|ok|okay|same|again)\>', 'once'));
+weak = ~isempty(regexp(q, ['\<(it|them|again|change|modify|update|continue|increase|decrease|more|less|' ...
+    'smaller|bigger|larger|explain|why)\>'], 'once'));
+nNum = numel(local_numbers(prompt));
+tf = strong || (numel(prompt) < 200 && lead) || (numel(prompt) < 160 && weak && nNum <= 2);
 end
 
 function [msgs, older] = local_convContext(conv, pass)
@@ -2286,10 +2804,12 @@ end
 
 function cmds = local_recentCommands(n)
 cmds = {};
-try
-    h = com.mathworks.mlservices.MLCommandHistoryServices.getSessionHistory;
-    cmds = cell(h)';
-catch
+if ~local_newDesktop()                       % Java desktop only (R2024b and older)
+    try
+        h = com.mathworks.mlservices.MLCommandHistoryServices.getSessionHistory;
+        cmds = cell(h)';
+    catch
+    end
 end
 if isempty(cmds)
     try
@@ -3175,10 +3695,20 @@ fprintf(2, varargin{:});
 end
 
 function local_busy(txt)
-% One temporary status line ("ru: writing code ...") that is erased again afterwards.
-persistent n
+% One temporary status line ("ru: writing code ...") that is erased again afterwards. MATLAB R2025a
+% and newer cannot erase text in the Command Window: there the line is printed once and stays.
+persistent n last
 if isempty(n)
     n = 0;
+    last = '';
+end
+if local_newDesktop()
+    if ~isempty(txt) && ~strcmp(txt, last) && isempty(strfind(txt, 'running and checking'))
+        fprintf('%s\n', txt);
+        drawnow;
+    end
+    last = txt;
+    return
 end
 if n > 0
     b = repmat(sprintf('\b'), 1, n);
@@ -3340,6 +3870,11 @@ s = strrep(s, char(13), '');
 if all(double(s) < 128)
     return
 end
+% Letters and digits of Word/OneNote equations (math italic x, bold 2, ...) -> plain ones.
+d = double(s);
+if any(d >= 55296 & d <= 57343) || any(d == 8462)
+    s = char(local_mathAlnum(d));
+end
 % Superscripts: 10^-5, x^2, ...
 supFrom = [8304 185 178 179 8308:8313 8315 8314 8319 739 8317 8318];
 supTo = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '-', '+', 'n', 'x', '(', ')'};
@@ -3380,7 +3915,9 @@ end
 pairs = {
     160, ' '; 8201, ' '; 8202, ' '; 8203, ''; 8239, ' '; 65279, ''
     8216, ''''; 8217, ''''; 8242, ''''; 8243, ''''''; 8220, '"'; 8221, '"'
-    8211, '-'; 8212, '-'; 8722, '-'; 8208, '-'; 8209, '-'
+    8211, '-'; 8212, '-'; 8722, '-'; 8208, '-'; 8209, '-'; 8210, '-'; 8213, '-'; 173, ''; 8289, ''
+    64256, 'ff'; 64257, 'fi'; 64258, 'fl'; 64259, 'ffi'; 64260, 'ffl'; 64261, 'st'; 64262, 'st'
+    8727, '*'; 180, ''''; 8462, 'h'
     215, '*'; 183, '*'; 8729, '*'; 8901, '*'; 247, '/'; 8260, '/'; 8725, '/'
     8804, '<='; 8805, '>='; 8800, '~='; 8776, '~'; 177, '+/-'; 8734, 'Inf'
     8730, 'sqrt'; 8747, 'integral '; 8721, 'sum '; 8706, 'd'; 8710, 'Delta'; 8711, 'grad'
@@ -3398,6 +3935,39 @@ s = regexprep(s, [char(176) '\s*F(?![a-z])'], ' degF');
 s = strrep(s, char(176), ' deg');
 for k = 1:size(pairs, 1)
     s = strrep(s, char(pairs{k, 1}), pairs{k, 2});
+end
+end
+
+function out = local_mathAlnum(d)
+% UTF-16 code units (double) -> the same text with the Mathematical Alphanumeric Symbols (U+1D400..
+% U+1D7FF, written as surrogate pairs) replaced by plain A-Z, a-z, 0-9; other characters unchanged.
+out = zeros(1, 0);
+k = 1;
+n = numel(d);
+while k <= n
+    c = d(k);
+    if c >= 55296 && c <= 56319 && k < n && d(k+1) >= 56320 && d(k+1) <= 57343
+        cp = 65536 + (c - 55296) * 1024 + (d(k+1) - 56320);
+        if cp >= hex2dec('1D400') && cp <= hex2dec('1D6A3')
+            j = mod(cp - hex2dec('1D400'), 52);
+            if j < 26
+                out(end+1) = 65 + j; %#ok<AGROW>
+            else
+                out(end+1) = 97 + j - 26; %#ok<AGROW>
+            end
+        elseif cp >= hex2dec('1D7CE') && cp <= hex2dec('1D7FF')
+            out(end+1) = 48 + mod(cp - hex2dec('1D7CE'), 10); %#ok<AGROW>
+        else
+            out = [out c d(k+1)]; %#ok<AGROW>
+        end
+        k = k + 2;
+    elseif c == 8462
+        out(end+1) = double('h'); %#ok<AGROW>    % Planck-style italic h used by Word equations
+        k = k + 1;
+    else
+        out(end+1) = c; %#ok<AGROW>
+        k = k + 1;
+    end
 end
 end
 
@@ -3439,6 +4009,11 @@ txt = fread(fid, [1 Inf], '*char');
 if ~isempty(txt) && double(txt(1)) == 65279
     txt = txt(2:end);
 end
+end
+
+function t = local_batText(t)
+% A value inside a .bat file: %% for a literal percent sign (quotes are not allowed in Windows paths).
+t = strrep(t, '%', '%%');
 end
 
 function local_writeText(f, txt)
@@ -3553,55 +4128,195 @@ for t = chosen
 end
 exCode = lower(strjoin({kb.examples(ctx.examples).code}, ' '));
 used = false(1, numel(kb.lib));
+named = ismember(names, local_namedLibFunctions(p));
 pri = zeros(1, numel(kb.lib));
 for k = 1:numel(kb.lib)
     used(k) = ~isempty(strfind(exCode, lower(names{k})));
     parts = strsplit(names{k}, '_');
-    if used(k)
-        pri(k) = pri(k) + 2;
-    end
+    pri(k) = 3 * named(k) + 2 * used(k);
     if numel(parts) > 1 && numel(parts{2}) > 3 && ~isempty(strfind(p, parts{2}))
         pri(k) = pri(k) + 1;
     end
 end
-cand = find(isCand | used);
-[~, o] = sort(pri(cand), 'descend');
-cand = cand(o);
-ctx.libFull = cand(1:min(8, numel(cand)));
+% Full help only for what this problem needs (every prompt token costs time on a processor): the
+% functions of the methods it names and those the solved examples use, at least three of the topic.
+% The names of all functions are in the system part, and a failed call gets its full help (hints).
+core = find(used | named);
+[~, o] = sort(pri(core), 'descend');
+core = core(o);
+rest = setdiff(find(isCand), core, 'stable');
+[~, o] = sort(pri(rest), 'descend');
+rest = rest(o);
+ctx.libFull = [core(1:min(6, numel(core))), rest(1:min(max(0, 3 - numel(core)), numel(rest)))];
 
 ctx.direct = local_directMatch(kb, prompt, sims);
 end
 
+function names = local_namedLibFunctions(p)
+% ru_lib functions of the methods a (lower-case) problem text names.
+persistent T
+if isempty(T)
+    T = {'bisect|half-interval', {'root_bisection'};
+        'false[- ]position|regula[- ]?falsi', {'root_falseposition'};
+        'newton[- ]raphson|newton''?s method|newtraph', {'root_newton'};
+        'system of (non-?linear|simultaneous non-?linear) equations|non-?linear (system|equations)', {'root_newtonsys'};
+        '(?<!modified )secant', {'root_secant'};
+        'modified secant', {'root_modsecant'};
+        'fixed[- ]point|simple iteration', {'root_fixedpoint'};
+        'incremental search', {'root_incsearch'};
+        'golden', {'opt_golden'};
+        'trapezoid|trapz', {'integ_trap'};
+        'simpson', {'integ_simp13', 'integ_simp38', 'integ_simpdata'};
+        'romberg', {'integ_romberg'};
+        'gauss(ian)? quadrature|gauss[- ]legendre|(two|three)[- ]point gauss', {'integ_gauss'};
+        'boole|newton[- ]cotes', {'integ_newtoncotes'};
+        'euler', {'ode_euler'};
+        'heun', {'ode_heun'};
+        'midpoint', {'ode_midpoint'};
+        'ralston', {'ode_ralston'};
+        'runge[- ]kutta|(?<![a-z])rk4|fourth[- ]order rk', {'ode_rk4'};
+        'shooting', {'ode_shooting'};
+        'boundary[- ]value', {'ode_fdbvp', 'ode_shooting'};
+        'lagrange', {'interp_lagrange'};
+        'divided difference|newton''?s? interpolat', {'interp_newton', 'interp_divdiff'};
+        'natural (cubic )?spline|natural end', {'interp_natspline'};
+        'naive gauss|gauss(ian)? elimination', {'lin_gaussnaive'};
+        'pivot', {'lin_gausspivot'};
+        'gauss[- ]jordan', {'lin_gaussjordan'};
+        '(?<![a-z])lu(?![a-z])', {'lin_lu', 'lin_lusolve'};
+        'cholesky', {'lin_cholesky'};
+        'tridiagonal|thomas', {'lin_tridiag'};
+        'gauss[- ]seidel', {'lin_gaussseidel'};
+        'jacobi', {'lin_jacobi'};
+        'cramer', {'lin_cramer'};
+        'power method', {'eig_power'};
+        'linear regression|straight line|least[- ]squares? line', {'fit_linear'};
+        'polynomial regression|parabola|quadratic fit|cubic fit', {'fit_poly'};
+        'multiple (linear )?regression', {'fit_multilinear'};
+        'general linear least|basis function', {'fit_general'};
+        'non-?linear regression|fminsearch', {'fit_nonlinear'};
+        'power (model|law|equation)', {'fit_power'};
+        'exponential model', {'fit_exponential'};
+        'saturation[- ]growth', {'fit_saturation'};
+        'richardson', {'diff_richardson'};
+        '(forward|backward|centered|central) (finite[- ])?difference', {'diff_fd'};
+        'fourier series', {'fourier_series'};
+        '(?<![a-z])dft(?![a-z])|discrete fourier', {'fourier_dft'};
+        'power spectrum|periodogram', {'fourier_spectrum'};
+        'sinusoid', {'fourier_sinefit'};
+        't[- ]test|ttest', {'stat_ttest', 'stat_ttest2'};
+        'confidence interval', {'stat_ci_mean'};
+        'histogram', {'stat_hist'}};
+end
+names = {};
+for k = 1:size(T, 1)
+    if ~isempty(regexp(p, T{k, 1}, 'once'))
+        names = [names, T{k, 2}]; %#ok<AGROW>
+    end
+end
+end
+
 function idx = local_directMatch(kb, prompt, sims)
+% A verified example runs as it is when it is one of the three closest examples, all of its numbers are
+% in the prompt (at most two other numbers there), and the prompt names the same methods. Of several,
+% the one that accounts for the most numbers of the prompt, then the closest.
 idx = 0;
 if isempty(sims)
     return
 end
-[s, b] = max(sims);
-if s < 0.45
-    return
+U = local_numbers(prompt);
+M = local_methodSet(kb, prompt);
+[ss, order] = sort(sims, 'descend');
+best = inf;
+for j = 1:min(3, numel(order))
+    if ss(j) < 0.45
+        break
+    end
+    ex = kb.examples(order(j));
+    if ex.skip || numel(ex.numbers) < 2 || ~all(ismember(ex.numbers, U)) || ~isequal(M, ex.methods)
+        continue
+    end
+    extra = numel(setdiff(U, ex.numbers));
+    if extra <= 2 && extra < best
+        best = extra;
+        idx = order(j);
+    end
 end
-ex = kb.examples(b);
-if ex.skip || numel(ex.numbers) < 2
+if idx == 0
+    idx = local_labelMatch(kb, prompt, sims);
+end
+end
+
+function idx = local_labelMatch(kb, prompt, sims)
+% A textbook problem cited by its number ("5.11 A beam is loaded as shown in Fig. P5.11 ..."), often
+% without its data (they are in the figure): the verified example of that problem runs directly when
+% it is close to the prompt, every number in the prompt is one of its numbers (no changed data), the
+% methods agree, and it is the only example of that number that fits.
+idx = 0;
+labels = local_probLabels(prompt);
+if isempty(labels)
     return
 end
 U = local_numbers(prompt);
-if ~all(ismember(ex.numbers, U))
+M = local_methodSet(kb, prompt);
+fit = zeros(1, 0);
+for k = 1:numel(kb.examples)
+    ex = kb.examples(k);
+    if ~ex.skip && sims(k) >= 0.45 && any(ismember(labels, ex.labels)) && all(ismember(U, ex.numbers)) ...
+            && isequal(M, ex.methods)
+        fit(end+1) = k; %#ok<AGROW>
+    end
+end
+if numel(fit) == 1
+    idx = fit;
+end
+end
+
+function L = local_probLabels(txt)
+% Textbook problem numbers cited in a prompt: a leading "6.22 You are ...", "Prob. 6.22",
+% "Problem 6.22", "Chapra 6.22" or a figure "Fig. P6.22".
+L = {};
+pats = {'^\s*(\d{1,2}\.\d{1,2})(?=\s+[A-Z(])', ...
+    '(?i)(?<![a-z])(?:prob(?:lem)?s?\.?|exercise|chapra)\s*#?\s*(\d{1,2}\.\d{1,2})(?![\d])', ...
+    '(?i)(?<![a-z])fig(?:ure)?\.?\s*P(\d{1,2}\.\d{1,2})(?![\d])'};
+for k = 1:numel(pats)
+    t = regexp(txt, pats{k}, 'tokens');
+    for j = 1:numel(t)
+        L{end+1} = t{j}{1}; %#ok<AGROW>
+    end
+end
+L = unique(L);
+end
+
+function L = local_sourceLabels(src)
+% Problem numbers of an example (SOURCE: "Chapra Prob. 5.11", "Chapra Probs. 21.21 and 21.24").
+% A source marked "earlier edition" is not matched by number: that number is another problem now.
+L = {};
+if ~isempty(strfind(lower(src), 'earlier edition'))
     return
 end
-if numel(setdiff(U, ex.numbers)) > 2
-    return
+t = regexp(src, '(?i)probs?\.\s*(\d+\.\d+(?:\s*(?:,|and|&)\s*\d+\.\d+)*)', 'tokens');
+for j = 1:numel(t)
+    L = [L, regexp(t{j}{1}, '\d+\.\d+', 'match')]; %#ok<AGROW>
 end
-if ~isequal(local_methodSet(kb, prompt), ex.methods)
-    return
-end
-idx = b;
+L = unique(L);
 end
 
 function v = local_numbers(txt)
 % Data values in a text: thousands separators removed; digits inside words (interp1, m3, ode45)
 % and problem/figure/table labels are ignored.
 txt = regexprep(txt, '(?<=\d),(?=\d{3}(?!\d))', '');
+% Exponents are lost when a problem is copied from a PDF: 10^3 -> 103, 10^-5 -> 10-5, h^2 -> h2,
+% cm^3 -> cm3. Powers of ten are written the way the PDF text reads; other exponents are skipped.
+txt = regexprep(txt, '(?<![\d.])10\s*\^\s*\(?\s*(-?)\s*(\d+)\s*\)?', '10$1$2');
+txt = regexprep(txt, '\^\s*\(?\s*-?\d*\.?\d+(\s*/\s*\d+)?\s*\)?', ' ');
+% "seventh-order" = "7th order".
+ord = {'first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh', 'eighth', 'ninth', 'tenth'};
+for k = 1:numel(ord)
+    txt = regexprep(txt, ['(?i)(?<![a-z])' ord{k} '(?=[\s\-]*(order|degree))'], sprintf('%dth', k));
+end
+% A leading textbook problem number ("6.22 You are designing ...").
+txt = regexprep(txt, '^\s*\d{1,2}\.\d{1,2}(?=\s+[A-Z(])', ' ');
 txt = regexprep(txt, ['(?i)\<(problem|prob\.?|example|ex\.?|exercise|fig\.?|figure|table|eq\.?|' ...
     'equation|section|sec\.?|chapter|ch\.?|page|slide|question|q\.?|set)[\s\-]*[A-Z]?\d+(\.\d+)*[a-z]?'], ' ');
 tok = regexp(txt, '(?<![A-Za-z_\d.])(\d+\.?\d*|\.\d+)', 'match');
@@ -3700,15 +4415,42 @@ d3 = dir(fullfile(libDir, '*.m'));
 stamp = [0, [d1.datenum], [d2.datenum], [d3.datenum]];
 key = sprintf('%s|%d|%d|%d|%.8f', root, numel(d1), numel(d2), numel(d3), max(stamp));
 if isempty(cache) || ~strcmp(cacheKey, key)
-    k = struct();
-    k.topics = local_readTopics(tpDir, d2);
-    k.methodRegex = {};
-    for t = 1:numel(k.topics)
-        k.methodRegex = [k.methodRegex, k.topics(t).methodRegex];
+    % The parsed knowledge base is kept in brain\kb_cache.mat (one file read instead of ~250 on the
+    % pendrive); it is rebuilt when any example, topic, library file or ru.m itself changes.
+    dr = dir(fullfile(root, 'ru.m'));
+    diskKey = sprintf('kb1|%d|%d|%d|%.8f|%d|%d|%.8f', numel(d1), numel(d2), numel(d3), max(stamp), ...
+        sum([0, d1.bytes, d2.bytes, d3.bytes]), sum([0, dr.bytes]), max([0, dr.datenum]));
+    cf = fullfile(local_brain(root), 'kb_cache.mat');
+    k = [];
+    try
+        if exist(cf, 'file') == 2
+            S = load(cf);
+            if isfield(S, 'diskKey') && strcmp(S.diskKey, diskKey) && isfield(S, 'kc') && isstruct(S.kc) && ...
+                    iscell(S.kc.vocabWords) && numel(S.kc.vocabWords) == size(S.kc.W, 2) && ...
+                    numel(S.kc.examples) == numel(d1) && numel(S.kc.vocabWords) > 0
+                k = S.kc;
+                k.vocab = containers.Map(k.vocabWords, num2cell(1:numel(k.vocabWords)));
+            end
+        end
+    catch
+        k = [];
     end
-    k.lib = local_readLib(libDir, d3);
-    k.examples = local_readExamples(exDir, d1, k);
-    k = local_buildIndex(k);
+    if isempty(k)
+        k = struct();
+        k.topics = local_readTopics(tpDir, d2);
+        k.methodRegex = {};
+        for t = 1:numel(k.topics)
+            k.methodRegex = [k.methodRegex, k.topics(t).methodRegex];
+        end
+        k.lib = local_readLib(libDir, d3);
+        k.examples = local_readExamples(exDir, d1, k);
+        k = local_buildIndex(k);
+        try
+            kc = rmfield(k, 'vocab');               % the map is rebuilt from vocabWords (portable)
+            save(cf, 'kc', 'diskKey', '-v7');
+        catch
+        end
+    end
     cache = k;
     cacheKey = key;
 end
@@ -3824,7 +4566,7 @@ end
 
 function E = local_readExamples(exDir, d, kb)
 E = struct('file', {}, 'title', {}, 'topic', {}, 'topicIdx', {}, 'source', {}, 'keywords', {}, ...
-    'problem', {}, 'checks', {}, 'skip', {}, 'code', {}, 'numbers', {}, 'methods', {});
+    'problem', {}, 'checks', {}, 'skip', {}, 'code', {}, 'numbers', {}, 'methods', {}, 'labels', {});
 topicNames = {kb.topics.name};
 for i = 1:numel(d)
     f = fullfile(exDir, d(i).name);
@@ -3834,7 +4576,8 @@ for i = 1:numel(d)
     end
     lines = regexp(txt, '\n', 'split');
     e = struct('file', f, 'title', '', 'topic', '', 'topicIdx', 0, 'source', '', 'keywords', {{}}, ...
-        'problem', '', 'checks', {{}}, 'skip', false, 'code', '', 'numbers', zeros(1, 0), 'methods', zeros(1, 0));
+        'problem', '', 'checks', {{}}, 'skip', false, 'code', '', 'numbers', zeros(1, 0), 'methods', zeros(1, 0), ...
+        'labels', {{}});
     prob = {};
     key = '';
     codeStart = 0;
@@ -3892,50 +4635,44 @@ for i = 1:numel(d)
     end
     e.numbers = local_numbers(e.problem);
     e.methods = local_methodSet(kb, e.problem);
+    e.labels = local_sourceLabels(e.source);
     E(end+1) = e; %#ok<AGROW>
 end
 end
 
 function kb = local_buildIndex(kb)
+% TF-IDF index of the solved examples (title and keywords count twice), built in one vectorized pass.
 N = numel(kb.examples);
-kb.vocab = containers.Map('KeyType', 'char', 'ValueType', 'double');
-rows = zeros(1, 0);
-cols = zeros(1, 0);
-vals = zeros(1, 0);
-df = zeros(1, 0);
+parts = cell(1, N);
+owner = cell(1, N);
 for i = 1:N
     e = kb.examples(i);
     kw = strjoin(e.keywords, ' ');
     t = [local_tokens(e.title), local_tokens(e.title), local_tokens(kw), local_tokens(kw), local_tokens(e.problem)];
-    if isempty(t)
-        continue
-    end
-    [u, ~, j] = unique(t);
-    cnt = accumarray(j(:), 1)';
-    for m = 1:numel(u)
-        if isKey(kb.vocab, u{m})
-            c = kb.vocab(u{m});
-        else
-            c = double(kb.vocab.Count) + 1;
-            kb.vocab(u{m}) = c;
-            df(c) = 0;
-        end
-        df(c) = df(c) + 1;
-        rows(end+1) = i; %#ok<AGROW>
-        cols(end+1) = c; %#ok<AGROW>
-        vals(end+1) = 1 + log(cnt(m)); %#ok<AGROW>
-    end
+    parts{i} = t(:)';
+    owner{i} = i * ones(1, numel(t));
 end
-V = double(kb.vocab.Count);
-kb.idf = log((N + 1) ./ (df + 1)) + 1;
-if N == 0 || V == 0
-    kb.W = sparse(N, max(V, 1));
+allTok = [parts{:}];
+allOwner = [owner{:}];
+if N == 0 || isempty(allTok)
+    kb.vocab = containers.Map('KeyType', 'char', 'ValueType', 'double');
+    kb.vocabWords = {};
+    kb.idf = zeros(1, 0);
+    kb.W = sparse(N, 1);
     return
 end
-W = sparse(rows, cols, vals .* kb.idf(cols), N, V);
+[words, ~, j] = unique(allTok);
+V = numel(words);
+C = sparse(allOwner(:), j(:), 1, N, V);                 % term counts per example
+[r, c, cnt] = find(C);
+df = full(sum(C > 0, 1));
+kb.idf = log((N + 1) ./ (df + 1)) + 1;
+W = sparse(r, c, (1 + log(cnt(:))) .* kb.idf(c(:))', N, V);
 nrm = full(sqrt(sum(W.^2, 2)));
 nrm(nrm == 0) = 1;
 kb.W = spdiags(1 ./ nrm, 0, N, N) * W;
+kb.vocabWords = words(:)';
+kb.vocab = containers.Map(kb.vocabWords, num2cell(1:V));
 end
 
 function U = local_userFiles(root)
@@ -4012,7 +4749,7 @@ key = 'model';
 if strcmp(purpose, 'vision')
     key = 'vision';
 end
-want = local_setting(root, key, 'auto');
+want = local_modelChoice(root, key);
 cached = C.(purpose);
 if ~forceStart && isempty(exclude) && ~isempty(cached)
     names = local_tags(cached.host, 3);
@@ -4024,6 +4761,9 @@ end
 hosts = local_hosts(root);
 pend = local_pendHost();
 customUp = ~strcmp(hosts{1}, pend) && ~isempty(local_tags(hosts{1}, 3));
+if local_ping(pend)
+    local_checkEngineFolder(root);
+end
 if ~local_ping(pend) && (forceStart || ~customUp) ...
         && (forceStart || ~isempty(local_pendriveModels(root)) || ~isempty(local_findOllama(root)))
     local_busy('ru: starting the AI engine ...');
@@ -4031,6 +4771,7 @@ if ~local_ping(pend) && (forceStart || ~customUp) ...
     local_busy('');
 end
 [H, M, S] = local_findModels(hosts);
+[H, M, S] = local_dropIncomplete(root, H, M, S);
 if isempty(M)
     if isempty(local_engineProblem())
         if isempty(local_pendriveModels(root))
@@ -4060,6 +4801,77 @@ C.(purpose) = E;
 if local_ping(E.host)
     local_engineProblem('');
 end
+end
+
+function [H, M, S] = local_dropIncomplete(root, H, M, S)
+% A model of this folder whose weight file is missing or shorter than it should be (an interrupted
+% download, a copy to another drive that failed on a big file) is listed by the engine but cannot
+% load: it is not used, and ru says once how to repair it.
+persistent told
+if isempty(told)
+    told = {};
+end
+P = local_pendriveModels(root);
+if isempty(P)
+    return
+end
+keep = true(1, numel(M));
+for k = 1:numel(M)
+    if ~local_isPendHost(H{k})
+        continue
+    end
+    j = find(arrayfun(@(p) local_sameModel(p.name, M{k}), P), 1);
+    if ~isempty(j) && ~P(j).complete
+        keep(k) = false;
+        if ~any(strcmp(told, M{k}))
+            told{end+1} = M{k}; %#ok<AGROW>
+            local_err(['[ru] %s is incomplete in %s (a model file is missing or was cut short, e.g. by a copy ' ...
+                'that failed): it is not used. Run setup_ru.bat on a PC with internet to complete it.\n'], ...
+                M{k}, local_modelsDir(root));
+        end
+    end
+end
+H = H(keep);
+M = M(keep);
+S = S(keep);
+end
+
+function local_checkEngineFolder(root)
+% An engine on port 11435 that was started from another folder (another copy of ru, another drive
+% letter, an Ollama of the PC) serves that folder's models with that folder's settings. Only the
+% engine program of THIS folder is used: any other is stopped and this folder's engine started.
+persistent done
+if ~isempty(done) && strcmp(done, root)
+    return
+end
+done = root;
+mine = local_findOllama(root);
+if isempty(mine)
+    return
+end
+running = local_engineExe();
+if ~isempty(running)
+    if ~strcmpi(strrep(running, '/', '\'), strrep(mine, '/', '\'))
+        local_err('[ru] The running AI engine is %s, not the one in this folder; restarting it from %s ...\n', ...
+            running, root);
+        local_restartEngine(root, false);
+    end
+    return
+end
+% Program path unknown (PowerShell blocked): judge by the models it serves.
+P = local_pendriveModels(root);
+if isempty(P)
+    return
+end
+served = local_tags(local_pendHost(), 3);
+mine = {P([P.complete]).name};
+missing = mine(cellfun(@(n) ~any(cellfun(@(m) local_sameModel(n, m), served)), mine));
+if isempty(missing)
+    return
+end
+local_err(['[ru] The running AI engine does not have %s from this folder (it was started from another ' ...
+    'folder); restarting it from %s ...\n'], strjoin(missing, ', '), root);
+local_restartEngine(root, false);
 end
 
 function E = local_emptyEngine(purpose)
@@ -4092,7 +4904,9 @@ msg = P;
 end
 
 function hosts = local_hosts(root)
-hosts = {local_pendHost(), 'http://127.0.0.1:11434'};
+% Only the engine of this folder (port 11435); another computer only when chosen with  ru host <IP>.
+% An Ollama installed on the PC itself (port 11434) is never used: ru must not depend on the PC.
+hosts = {local_pendHost()};
 custom = strtrim(local_setting(root, 'host', ''));
 if ~isempty(custom)
     if isempty(regexp(custom, '^https?://', 'once'))
@@ -4174,10 +4988,14 @@ end
 function r = local_getJSON(url, timeout)
 r = [];
 try
-    if exist('OCTAVE_VERSION', 'builtin')
+    if local_useCurl()
         raw = local_curl(url, '', timeout);
     else
-        raw = webread(url, weboptions('Timeout', timeout, 'ContentType', 'text'));
+        try
+            raw = webread(url, weboptions('Timeout', timeout, 'ContentType', 'text'));
+        catch err
+            raw = local_curlFallback(url, '', timeout, err);
+        end
     end
     if ~ischar(raw)
         raw = char(raw);
@@ -4188,7 +5006,7 @@ end
 end
 
 function r = local_postJSON(url, body, timeout)
-if exist('OCTAVE_VERSION', 'builtin')
+if local_useCurl()
     raw = local_curl(url, jsonencode(body), timeout);
 else
     raw = webwrite(url, jsonencode(body), weboptions('MediaType', 'application/json', 'ContentType', 'text', ...
@@ -4200,23 +5018,74 @@ end
 r = jsondecode(raw);
 end
 
+function tf = local_useCurl(set)
+% true in GNU Octave, and in MATLAB when MATLAB's own web functions cannot reach the engine on this
+% PC (a proxy configured in Windows or in MATLAB's preferences catches 127.0.0.1): curl without proxy.
+persistent U
+if isempty(U)
+    U = exist('OCTAVE_VERSION', 'builtin') > 0;
+end
+if nargin == 1
+    U = set;
+end
+tf = U;
+end
+
+function raw = local_curlFallback(url, json, timeout, err)
+% MATLAB's web request (a GET: ping, model list) failed. If curl reaches the engine, a proxy setting
+% of this PC was in the way: all requests use curl from now on. Otherwise the original error stands
+% (the engine is not running).
+if ~isempty(json) || ~local_isLocalHost(url) || isempty(local_curlExe())
+    rethrow(err);
+end
+try
+    raw = local_curl(url, '', timeout);
+catch
+    rethrow(err);
+end
+if isempty(strtrim(raw))
+    rethrow(err);
+end
+local_useCurl(true);
+end
+
+function c = local_curlExe()
+persistent C
+if isempty(C)
+    C = 'curl';
+    if ispc
+        C = fullfile(getenv('SystemRoot'), 'System32', 'curl.exe');
+        if exist(C, 'file') ~= 2
+            C = '';
+        end
+    end
+end
+c = C;
+end
+
 function raw = local_curl(url, json, timeout)
-% GNU Octave has no JSON web client; use curl there (MATLAB uses webread/webwrite).
-out = [tempname '.json'];
+% HTTP without MATLAB's web functions (GNU Octave, or a PC whose proxy settings block 127.0.0.1).
+root = fileparts(mfilename('fullpath'));
+exe = local_curlExe();
+if isempty(exe)
+    error('ru:curl', 'curl.exe is not on this PC (Windows 10 or newer has it)');
+end
+out = local_tmpFile(root, '.json');
+in = '';
 if isempty(json)
-    cmd = sprintf('curl -s -S --max-time %d -o "%s" "%s" 2>&1', ceil(timeout), out, url);
+    cmd = sprintf('"%s" -s -S --noproxy "*" --max-time %d -o "%s" "%s" 2>&1', exe, ceil(timeout), out, url);
 else
-    in = [tempname '.json'];
+    in = local_tmpFile(root, '.json');
     local_writeText(in, json);
-    cmd = sprintf('curl -s -S --max-time %d -H "Content-Type: application/json" --data-binary "@%s" -o "%s" "%s" 2>&1', ...
-        ceil(timeout), in, out, url);
+    cmd = sprintf('"%s" -s -S --noproxy "*" --max-time %d -H "Content-Type: application/json" --data-binary "@%s" -o "%s" "%s" 2>&1', ...
+        exe, ceil(timeout), in, out, url);
 end
 [st, msg] = system(cmd);
 raw = local_readText(out);
 if exist(out, 'file') == 2
     delete(out);
 end
-if ~isempty(json) && exist(in, 'file') == 2
+if ~isempty(in) && exist(in, 'file') == 2
     delete(in);
 end
 if st ~= 0
@@ -4279,7 +5148,8 @@ end
 end
 
 function [k, why] = local_chooseModel(root, H, M, S, infos, want, purpose, exclude)
-% Quality first: the strongest model (by local_modelScore) that fits the free memory of this PC.
+% Default on every PC: the strongest installed model (qwen3.5:9b when it is on the pendrive),
+% whatever the free memory. Another model only when chosen with  ru model <name>  on this PC.
 persistent noted
 if isempty(noted)
     noted = {};
@@ -4294,20 +5164,29 @@ for i = 1:numel(M)
     end
 end
 if ~isempty(want) && ~strcmpi(want, 'auto')
-    for i = 1:numel(M)
-        if ok(i) && local_sameModel(want, M{i})
-            k = i;
-            why = 'chosen with ru model / ru vision';
-            return
-        end
+    usable = find(ok);
+    j = local_matchModel(want, M(usable));
+    if j > 0
+        k = usable(j);
+        why = 'chosen for this PC with ru model / ru vision';
+        return
     end
     if ~any(strcmp(noted, ['want:' want]))
         noted{end+1} = ['want:' want];
-        local_err('[ru] The chosen model "%s" is not installed here; choosing one automatically.\n', want);
+        md = local_modelsDir(root);
+        if isempty(md)
+            md = fullfile(root, 'model');
+        end
+        local_err(['[ru] %s (chosen with ru model) is not in the running AI engine, which has: %s.\n' ...
+            '[ru] Models are read from %s. Check with  ru status ; download it with setup_ru.bat, or use  ru model auto\n'], ...
+            want, strjoin(M, ', '), md);
     end
 end
 cand = find(ok);
 if isempty(cand)
+    if needVision
+        local_engineProblem('reading pictures needs a vision model such as qwen3.5:9b; none is installed');
+    end
     return
 end
 score = zeros(1, numel(cand));
@@ -4315,55 +5194,30 @@ for j = 1:numel(cand)
     score(j) = local_modelScore(M{cand(j)}, purpose);
 end
 [~, o] = sort(score, 'descend');
-cand = cand(o);
-mem = local_memBudget(root, H);
-need = zeros(1, numel(M));
-for i = cand
-    need(i) = max(local_memNeed(M{i}, S(i), min(16384, infos{i}.ctx)), local_modelStat(root, M{i}, 'needGB'));
-end
-for i = cand
-    remote = ~local_isLocalHost(H{i});
-    loaded = any(strcmp(mem.loaded, M{i}));
-    if remote || loaded || isnan(mem.avail) || S(i) == 0
-        k = i;
-        why = 'already in memory';
-        if remote
-            why = 'on another computer (ru host)';
-        elseif isnan(mem.avail) || S(i) == 0
-            why = 'strongest installed model';
-        end
-        break
-    end
-    failedAt = local_modelStat(root, M{i}, 'failFree');
-    if need(i) <= mem.avail && ~(failedAt > 0 && mem.avail <= failedAt + 0.5)
-        k = i;
-        why = sprintf('the strongest model that fits: needs ~%.1f GB, %.1f GB free', need(i), mem.avail);
-        break
-    end
-end
-if k == 0
-    [~, j] = min(S(cand));
-    k = cand(j);
-    if needVision && ~isnan(mem.total) && need(k) > mem.total - 1
-        local_engineProblem(sprintf(['reading pictures needs %s (~%.1f GB memory), but this PC has only ' ...
-            '%.1f GB'], M{k}, need(k), mem.total));
-        k = 0;
-        return
-    end
-    why = sprintf('smallest model; only %.1f GB memory is free', mem.avail);
-    if ~any(strcmp(noted, 'lowmem'))
-        noted{end+1} = 'lowmem';
-        local_err('[ru] Only %.1f GB memory is free; using %s. Close other programs for faster, better answers.\n', ...
-            mem.avail, M{k});
-    end
+k = cand(o(1));
+why = 'default: the strongest installed model';
+if ~local_isLocalHost(H{k})
+    why = 'on another computer (ru host)';
     return
 end
-best = cand(1);
-if k ~= best && local_isLocalHost(H{best}) && ~isnan(mem.total) && need(best) > mem.avail ...
-        && need(best) <= mem.total - 2 && ~any(strcmp(noted, ['close:' M{best}]))
-    noted{end+1} = ['close:' M{best}];
-    local_err('[ru] Close other programs to let ru use the stronger %s (needs ~%.1f GB, %.1f GB free now).\n', ...
-        M{best}, need(best), mem.avail);
+% Only a note when memory looks too small: the model is still used (ru model <small> to change).
+mem = local_memBudget(root, H);
+need = max(local_memNeed(M{k}, S(k), min(16384, infos{k}.ctx)), local_modelStat(root, M{k}, 'needGB'));
+if ~isnan(mem.avail) && S(k) > 0 && need > mem.avail && ~any(strcmp(mem.loaded, M{k})) ...
+        && ~any(strcmp(noted, ['mem:' M{k}]))
+    noted{end+1} = ['mem:' M{k}];
+    small = '';
+    others = cand(o(2:end));
+    if ~isempty(others)
+        [~, j] = min(S(others));
+        small = M{others(j)};
+    end
+    local_err('[ru] %s needs ~%.1f GB but only %.1f GB is free here: it may be slow. ru prep frees memory', ...
+        M{k}, need, mem.avail);
+    if ~isempty(small)
+        local_err('; the small model: ru model %s', small);
+    end
+    local_err('\n');
 end
 end
 
@@ -4437,8 +5291,61 @@ for i = 1:numel(M)
 end
 end
 
+function j = local_matchModel(want, names)
+% Index of the model meant by a name: the exact name, else a short form ("9b", "coder") that exactly
+% one of the names contains. 0 when none or several match.
+j = 0;
+if isempty(names)
+    return
+end
+hit = find(cellfun(@(n) local_sameModel(want, n), names), 1);
+if isempty(hit)
+    hit = find(~cellfun(@isempty, strfind(lower(names), lower(strtrim(want)))));
+    if numel(hit) ~= 1
+        return
+    end
+end
+j = hit;
+end
+
 function tf = local_sameModel(a, b)
 tf = strcmpi(regexprep(a, ':latest$', ''), regexprep(b, ':latest$', ''));
+end
+
+function v = local_modelChoice(root, key)
+% The model chosen for THIS PC with  ru model / ru vision  ('auto' when none was chosen).
+P = local_profile(root);
+v = 'auto';
+if isfield(P, key) && ischar(P.(key)) && ~isempty(strtrim(P.(key)))
+    v = strtrim(P.(key));
+end
+end
+
+function names = local_installedNames(root)
+% Models this ru can use: those of the running engines plus the complete ones on the pendrive.
+[H, names, S] = local_findModels(local_hosts(root));
+[~, names] = local_dropIncomplete(root, H, names, S);
+P = local_pendriveModels(root);
+for k = 1:numel(P)
+    if P(k).complete && ~any(cellfun(@(n) local_sameModel(n, P(k).name), names))
+        names{end+1} = P(k).name; %#ok<AGROW>
+    end
+end
+names = unique(names);
+end
+
+function d = local_editDistance(a, b)
+a = lower(a);
+b = lower(b);
+d = 0:numel(b);
+for i = 1:numel(a)
+    prev = d;
+    d(1) = i;
+    for j = 1:numel(b)
+        d(j+1) = min([prev(j+1) + 1, d(j) + 1, prev(j) + (a(i) ~= b(j))]);
+    end
+end
+d = d(end);
 end
 
 function s = local_modelScore(name, purpose)
@@ -4614,6 +5521,9 @@ if isempty(H)
         H.threads = H.cores;
     end
     H.cpu = regexprep(H.cpu, '\s+', ' ');
+    if ~isempty(getenv('RU_TEST_CPU'))              % tests only
+        H.cpu = getenv('RU_TEST_CPU');
+    end
 end
 hw = H;
 [hw.ramTotal, hw.ramFree] = local_ram();
@@ -4674,7 +5584,8 @@ if ~isempty(cache) && strcmp(cacheFile, f)
     P = cache;
     return
 end
-P = struct('gpuChecked', false, 'cpuOnly', false, 'gpuEnv', struct(), 'gpus', [], 'models', []);
+P = struct('gpuChecked', false, 'cpuOnly', false, 'noGpu', false, 'noDraft', false, 'gpuEnv', struct(), ...
+    'gpus', [], 'models', [], 'model', 'auto', 'vision', 'auto');
 if exist(f, 'file') == 2
     try
         r = jsondecode(local_readText(f));
@@ -4690,8 +5601,16 @@ end
 if ~isstruct(P.gpuEnv)
     P.gpuEnv = struct();
 end
+if ~ischar(P.model) || isempty(P.model)
+    P.model = 'auto';
+end
+if ~ischar(P.vision) || isempty(P.vision)
+    P.vision = 'auto';
+end
 P.gpuChecked = isequal(P.gpuChecked, true) || isequal(P.gpuChecked, 1);
 P.cpuOnly = isequal(P.cpuOnly, true) || isequal(P.cpuOnly, 1);
+P.noGpu = isequal(P.noGpu, true) || isequal(P.noGpu, 1);
+P.noDraft = isequal(P.noDraft, true) || isequal(P.noDraft, 1);
 cache = P;
 cacheFile = f;
 end
@@ -4715,7 +5634,7 @@ if nargin < 4
     end
     return
 end
-e = struct('name', model, 'failFree', 0, 'needGB', 0, 'pp', 0, 'tg', 0, 'load', 0);
+e = struct('name', model, 'failFree', 0, 'needGB', 0, 'pp', 0, 'tg', 0, 'load', 0, 'coldLoad', 0);
 if idx > 0
     old = P.models(idx);
     f = fieldnames(e);
@@ -4773,6 +5692,31 @@ for k = 1:numel(g)
     e.used = ~(off && strcmpi(e.library, 'vulkan')) && ~prof.cpuOnly;
     G(end+1) = e; %#ok<AGROW>
 end
+end
+
+function names = local_displayAdapters()
+% Names of the display adapters Windows knows (registry; fast, no PowerShell).
+names = {};
+if ~ispc
+    return
+end
+key = 'SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}';
+for k = 0:15
+    try
+        d = winqueryreg('HKEY_LOCAL_MACHINE', sprintf('%s\\%04d', key, k), 'DriverDesc');
+        if ischar(d) && ~isempty(strtrim(d))
+            names{end+1} = strtrim(d); %#ok<AGROW>
+        end
+    catch
+    end
+end
+end
+
+function tf = local_isIntegratedAdapter(name)
+% Intel HD/UHD/Iris graphics (not Arc) and basic/remote/virtual adapters: nothing the AI engine uses.
+tf = (~isempty(regexpi(name, 'intel', 'once')) && isempty(regexpi(name, 'arc', 'once'))) || ...
+    ~isempty(regexpi(name, ['microsoft basic|basic display|remote display|hyper-v|vmware|virtualbox|' ...
+    'citrix|parsec|displaylink|virtual display|indirect display|spacedesk|splashtop|teamviewer|radmin|mirage'], 'once'));
 end
 
 function G = local_parseGpus(logText, ramTotal)
@@ -4876,13 +5820,31 @@ if isempty(exe)
 end
 prof = local_profile(root);
 mode = lower(local_setting(root, 'gpu', 'auto'));
-env = {'OLLAMA_HOST', '127.0.0.1:11435'; 'OLLAMA_NOPRUNE', '1'; 'OLLAMA_KEEP_ALIVE', '60m'; ...
+env = {'OLLAMA_HOST', '127.0.0.1:11435'; 'OLLAMA_NOPRUNE', '1'; 'OLLAMA_KEEP_ALIVE', local_keepAlive(); ...
     'OLLAMA_MAX_LOADED_MODELS', '1'; 'OLLAMA_NUM_PARALLEL', '1'; 'OLLAMA_LOAD_TIMEOUT', '30m'};
 md = local_modelsDir(root);
 if ~isempty(md)
     env(end+1, :) = {'OLLAMA_MODELS', md};
 end
 cpu = cpuOnly || strcmp(mode, 'off') || (strcmp(mode, 'auto') && prof.cpuOnly);
+if ~cpu && strcmp(mode, 'auto') && ~prof.gpuChecked && ispc
+    % First start on this PC: when Windows lists only integrated or basic display adapters (typical lab
+    % PC), there is nothing for the engine to find, so its slow graphics check is skipped from the start.
+    ad = local_displayAdapters();
+    if ~isempty(ad) && all(cellfun(@local_isIntegratedAdapter, ad))
+        prof.gpuChecked = true;
+        prof.noGpu = true;
+        prof.gpus = [];
+        prof.gpuEnv = struct();
+        local_profile(root, prof);
+    end
+end
+% No usable graphics card: the engine skips its graphics check (loading the CUDA and Vulkan libraries
+% from the pendrive can take a minute) and runs on the processor straight away.
+noGpu = cpu || (strcmp(mode, 'auto') && prof.gpuChecked && prof.noGpu);
+if noGpu
+    env(end+1, :) = {'OLLAMA_LLM_LIBRARY', 'cpu'};
+end
 if cpu
     env = [env; {'CUDA_VISIBLE_DEVICES', '-1'; 'HIP_VISIBLE_DEVICES', '-1'; 'ROCR_VISIBLE_DEVICES', '-1'; ...
         'OLLAMA_VULKAN', '0'; 'GGML_VK_VISIBLE_DEVICES', '-1'}];
@@ -4899,29 +5861,48 @@ if exist(logf, 'file') == 2
     catch
     end
 end
-old = cell(size(env, 1), 1);
-for i = 1:size(env, 1)
-    old{i} = getenv(env{i, 1});
-    setenv(env{i, 1}, env{i, 2});
-end
+% The engine keeps everything it writes in ru's folder: its key and settings (home), temporary files.
+home = local_workDir(root, 'home');
+tmp = local_workDir(root, 'tmp');
+env = [env; {'USERPROFILE', home; 'HOME', home; 'TMP', tmp; 'TEMP', tmp}];
 st = 0;
 out = '';
 try
     if ispc
-        % A small launcher file avoids quoting problems with spaces or & in the pendrive path.
+        % A launcher file in ru's folder, written again at every start (so a new drive letter or folder
+        % is always right). It removes every Ollama/graphics setting of this PC and uses only Windows'
+        % own folders on PATH, so programs or settings installed on the PC cannot change the engine.
         bat = fullfile(local_brain(root), 'ru_engine.bat');
-        local_writeText(bat, sprintf(['@echo off\r\nchcp 65001 >nul\r\ntitle ru engine - close this window to stop the AI\r\n' ...
-            '"%s" serve > "%s" 2>&1\r\n'], exe, logf));
+        exeDir = fileparts(exe);
+        L = {'@echo off', 'chcp 65001 >nul', 'title ru engine - close this window to stop the AI', ...
+            'for /f "delims==" %%V in (''set OLLAMA_ 2^>nul'') do set "%%V="'};
+        for v = {'CUDA_VISIBLE_DEVICES', 'HIP_VISIBLE_DEVICES', 'ROCR_VISIBLE_DEVICES', 'GPU_DEVICE_ORDINAL', ...
+                'GGML_VK_VISIBLE_DEVICES', 'CUDA_PATH'}
+            L{end+1} = sprintf('set "%s="', v{1}); %#ok<AGROW>
+        end
+        L{end+1} = sprintf(['set "PATH=%s;%s;%%SystemRoot%%\\System32;%%SystemRoot%%;' ...
+            '%%SystemRoot%%\\System32\\Wbem"'], local_batText(exeDir), local_batText(fullfile(exeDir, 'lib', 'ollama')));
+        for i = 1:size(env, 1)
+            L{end+1} = sprintf('set "%s=%s"', env{i, 1}, local_batText(env{i, 2})); %#ok<AGROW>
+        end
+        L{end+1} = sprintf('"%s" serve > "%s" 2>&1', local_batText(exe), local_batText(logf));
+        local_writeText(bat, [strjoin(L, sprintf('\r\n')) sprintf('\r\n')]);
         [st, out] = system(sprintf('start "ru engine" /min "%s"', bat));
     else
+        env = [env; {'TMPDIR', tmp}];
+        old = cell(size(env, 1), 1);
+        for i = 1:size(env, 1)
+            old{i} = getenv(env{i, 1});
+            setenv(env{i, 1}, env{i, 2});
+        end
         [st, out] = system(sprintf('"%s" serve > "%s" 2>&1 &', exe, logf));
+        for i = 1:size(env, 1)
+            setenv(env{i, 1}, old{i});
+        end
     end
 catch err
     st = 1;
     out = err.message;
-end
-for i = 1:size(env, 1)
-    setenv(env{i, 1}, old{i});
 end
 if st ~= 0 || ~isempty(regexpi(out, 'blocked|denied|group policy|cannot find|not recognized', 'once'))
     local_engineProblem(sprintf(['Windows did not start the AI engine (%s). This PC may block programs on USB ' ...
@@ -4930,10 +5911,22 @@ if st ~= 0 || ~isempty(regexpi(out, 'blocked|denied|group policy|cannot find|not
 end
 t0 = tic;
 while toc(t0) < 180
-    pause(1);
+    pause(0.4);
     if local_ping(local_pendHost())
         ok = true;
         break
+    end
+    % Ollama's own fatal messages start a line ("Error: listen tcp ...: bind: ...", "panic: ..."); the
+    % normal log lines start with "time=" and may mention harmless graphics-driver errors.
+    fatal = regexp([char(10) local_readText(logf)], '\n((Error|panic): [^\r\n]*)', 'tokens');
+    if ~isempty(fatal)
+        why = strtrim(fatal{end}{1});
+        if ~isempty(regexpi(why, 'bind|only one usage|address already in use', 'once'))
+            why = ['port 11435 is used by another program on this PC (' why '). Restart the PC, or close ' ...
+                'that program'];
+        end
+        local_engineProblem(['the AI engine stopped: ' why]);
+        return
     end
     if toc(t0) > 20 && ~local_engineRunning()
         txt = local_readText(logf);
@@ -4977,6 +5970,7 @@ if ~cpu && strcmp(mode, 'auto') && ~prof.gpuChecked
     prof.gpus = G;
     prof.gpuEnv = genv;
     prof.gpuChecked = true;
+    prof.noGpu = isempty(G) || all([G.integrated]);
     local_profile(root, prof);
     if changed
         local_killEngine();
@@ -5014,6 +6008,19 @@ try
             [~, ~] = system(['powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 11435 -State Listen ' ...
                 '-ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }"']);
         end
+        pause(1);
+        if local_ping(local_pendHost())
+            % The PID lookup failed (e.g. another Windows language): the ollama.exe programs of this folder.
+            exe = fullfile(fileparts(mfilename('fullpath')), 'ollama', 'ollama.exe');
+            [~, ~] = system(sprintf(['powershell -NoProfile -NonInteractive -Command "Get-Process ollama ' ...
+                '-ErrorAction SilentlyContinue | Where-Object { $_.Path -eq ''%s'' } | Stop-Process -Force"'], ...
+                strrep(exe, '''', '''''')));
+            pause(1);
+        end
+        if local_ping(local_pendHost())
+            % Last resort: every ollama.exe of this user.
+            [~, ~] = system('taskkill /F /T /IM ollama.exe');
+        end
     else
         [~, ~] = system('fuser -k -TERM 11435/tcp > /dev/null 2>&1 || (lsof -ti tcp:11435 | xargs -r kill) > /dev/null 2>&1');
     end
@@ -5024,6 +6031,32 @@ for k = 1:20
     if ~local_ping(local_pendHost())
         break
     end
+end
+end
+
+function exe = local_engineExe()
+% Full path of the program listening on port 11435 ('' when it cannot be found out).
+exe = '';
+if ~ispc
+    return
+end
+try
+    [~, out] = system('netstat -ano -p tcp');
+    pid = regexp(out, '127\.0\.0\.1:11435\s+\S+\s+LISTENING\s+(\d+)', 'tokens', 'once');
+    if isempty(pid)
+        pid = regexp(out, '127\.0\.0\.1:11435\s+0\.0\.0\.0:0\s+\S+\s+(\d+)', 'tokens', 'once');
+    end
+    if isempty(pid) || strcmp(pid{1}, '0')
+        return
+    end
+    [st, out] = system(sprintf(['powershell -NoProfile -NonInteractive -Command "(Get-Process -Id %s ' ...
+        '-ErrorAction SilentlyContinue).Path"'], pid{1}));
+    % (A network current folder makes cmd print a UNC warning first: take the line with the path.)
+    p = regexp(out, '[A-Za-z]:\\[^\r\n]*?\.exe(?=\s*($|[\r\n]))', 'match');
+    if st == 0 && ~isempty(p)
+        exe = strtrim(p{end});
+    end
+catch
 end
 end
 
@@ -5039,38 +6072,26 @@ if ~local_ping(local_pendHost())
 end
 local_killEngine();
 if local_ping(local_pendHost())
-    fprintf(2, '[ru] Could not stop it; close the "ru engine" window instead.\n');
+    fprintf(2, ['[ru] Could not stop it. It was probably started as administrator (for example by setup_ru.bat ' ...
+        'run as administrator). Close its window ("ru engine" or "ru setup engine"), or restart the PC.\n']);
 else
     fprintf('[ru] Engine stopped (memory freed). It starts again automatically when needed.\n');
 end
 end
 
 function exe = local_findOllama(root)
+% The engine program in this folder only (setup_ru.bat puts it there). An Ollama installed on the
+% PC is ignored on purpose: the pendrive must work the same on every PC.
 exe = '';
-c = {fullfile(root, 'ollama', 'ollama.exe'), fullfile(root, 'ollama', 'ollama'), ...
-    fullfile(root, 'ollama', 'bin', 'ollama'), ...
-    fullfile(getenv('LOCALAPPDATA'), 'Programs', 'Ollama', 'ollama.exe'), ...
-    fullfile(getenv('ProgramFiles'), 'Ollama', 'ollama.exe'), ...
-    '/usr/local/bin/ollama', '/usr/bin/ollama', '/opt/homebrew/bin/ollama'};
+c = {fullfile(root, 'ollama', 'ollama.exe'), fullfile(root, 'ollama', 'ollama'), fullfile(root, 'ollama', 'bin', 'ollama')};
+if ispc
+    c = c(1);
+end
 for k = 1:numel(c)
     if exist(c{k}, 'file') == 2
         exe = c{k};
         return
     end
-end
-try
-    if ispc
-        [st, out] = system('where ollama');
-    else
-        [st, out] = system('which ollama');
-    end
-    if st == 0
-        first = strtrim(regexp(out, '[^\r\n]+', 'match', 'once'));
-        if exist(first, 'file') == 2
-            exe = first;
-        end
-    end
-catch
 end
 end
 
@@ -5116,19 +6137,23 @@ for tries = 1:3
         detail = [err ' ' local_readTail(logf, logPos)];
     end
     kind = local_errorKind(detail);
-    if strcmp(kind, 'memory') && tries < 3
+    if own && local_draftN() > 0 && tries < 3 && (strcmp(kind, 'crash') || ...
+            ~isempty(regexpi(detail, 'spec|draft|mtp', 'once')))
+        % Fast decoding (MTP) failed here: off for good on this PC, and the same question again.
+        local_err('[ru] Fast decoding (MTP) failed on this PC; it is now off here.\n');
+        P = local_profile(root);
+        P.noDraft = true;
+        local_profile(root, P);
+        local_draftN(0);
+        continue
+    end
+    if strcmp(kind, 'memory')
+        % No automatic switch to a smaller model: that happens only with  ru model <name>.
         hw = local_hw(root);
         local_modelStat(root, E.model, 'failFree', hw.ramFree);
         req = regexp(detail, 'requires more \w+ memory \(([\d.]+)\s*GiB\)', 'tokens', 'once');
         if ~isempty(req)
             local_modelStat(root, E.model, 'needGB', str2double(req{1}));
-        end
-        E2 = local_engine(root, false, E.purpose, {E.model});
-        if ~isempty(E2.model) && ~strcmp(E2.model, E.model)
-            local_err('[ru] %s needs more memory than this PC has free now; using %s.\n', E.model, E2.model);
-            E = E2;
-            numCtx = E.ctx;
-            continue
         end
     elseif strcmp(kind, 'crash') && own && ~local_cpuMode(root) && tries < 3
         local_err('[ru] The graphics driver stopped the AI engine; the AI now runs on the processor on this PC.\n');
@@ -5172,7 +6197,8 @@ switch kind
         msg = sprintf(['%s did not finish in time on this PC. Close other programs and try again, or choose ' ...
             'a smaller model: ru model <name>'], E.model);
     case 'memory'
-        msg = sprintf('not enough free memory for %s: close other programs, or choose a smaller model: ru model <name>', E.model);
+        msg = sprintf(['not enough free memory for %s. Free memory with  ru prep  (closes browsers, chat, ...) ' ...
+            'and try again, or use the small model on this PC:  ru model qwen2.5-coder:3b'], E.model);
     case 'down'
         msg = 'the AI engine stopped running. Run: ru start';
     case 'crash'
@@ -5234,6 +6260,7 @@ if st.tg > 0 && st.genN >= 20
 end
 if st.load > 1
     local_modelStat(root, E.model, 'load', st.load);
+    local_modelStat(root, E.model, 'coldLoad', max(st.load, local_modelStat(root, E.model, 'coldLoad')));
 end
 end
 
@@ -5261,8 +6288,61 @@ end
 end
 
 function o = local_options(temperature, numCtx, numPredict)
+% The load-time options (num_ctx, draft_num_predict) are the same in every request, so the engine
+% never reloads the model because of them.
 o = struct('temperature', temperature, 'num_ctx', numCtx, 'num_predict', numPredict, ...
-    'top_p', 0.9, 'top_k', 40, 'seed', 42);
+    'top_p', 0.9, 'top_k', 40, 'seed', 42, 'draft_num_predict', local_draftN());
+end
+
+function k = local_keepAlive()
+% How long the engine keeps the model in memory after the last question: a whole exam, so it is
+% never loaded from the pendrive twice (ru stop frees the memory earlier).
+k = '4h';
+end
+
+function n = local_draftN(set)
+% Multi-token prediction (MTP): qwen3.5 has extra layers that guess the next tokens; the model checks
+% every guess, so the answer is exactly what it would write anyway, only faster. Checking several
+% tokens at once pays off on processors with AVX2 and 4+ cores (roughly 2013 and newer); on older
+% or 2-core processors it would be slower, so it stays off there. Off for good on a PC where it failed.
+persistent N
+if nargin == 1
+    N = set;
+end
+if isempty(N)
+    N = 0;
+    try
+        root = fileparts(mfilename('fullpath'));
+        hw = local_hw(root);
+        P = local_profile(root);
+        if ~P.noDraft && hw.cores >= 4 && local_cpuHasAvx2(hw.cpu)
+            N = 3;
+        end
+    catch
+    end
+end
+n = N;
+end
+
+function tf = local_cpuHasAvx2(name)
+% true only for processor families known to have AVX2 (conservative: unknown -> false).
+tf = false;
+s = lower(name);
+if ~isempty(regexp(s, 'ryzen|threadripper|epyc|core\S*\s*ultra|core\S*\s*[3579]\s+\d{3}', 'once'))
+    tf = true;
+    return
+end
+t = regexp(s, 'core\S*\s*i[3579]-(\d{3,5})', 'tokens', 'once');
+if ~isempty(t)
+    d = t{1};
+    if numel(d) == 5
+        tf = true;                                   % 10th generation and newer (i5-10400, i7-12700)
+    elseif numel(d) == 4
+        tf = d(1) >= '4' || (d(1) == '1' && d(2) <= '4');  % 4th-9th gen (i5-4590) or i5-1135G7 style
+    end
+    return
+end
+tf = ~isempty(regexp(s, 'xeon.*(e[357]-\d{4}\w?\s*v[3-9]|bronze|silver|gold|platinum|w-\d{4,5})', 'once'));
 end
 
 function [txt, cut, err, st] = local_chat(host, model, msgs, temperature, numCtx, numPredict, think, caps, timeout)
@@ -5270,7 +6350,7 @@ txt = '';
 cut = false;
 err = '';
 st = struct('pp', 0, 'tg', 0, 'load', 0, 'promptN', 0, 'genN', 0);
-body = struct('model', model, 'stream', false, 'keep_alive', '60m');
+body = struct('model', model, 'stream', false, 'keep_alive', local_keepAlive());
 body.messages = msgs;
 body.options = local_options(temperature, numCtx, numPredict);
 if any(strcmp(caps, 'thinking'))
@@ -5280,6 +6360,9 @@ r = [];
 for tries = 1:2
     try
         r = local_postJSON([host '/api/chat'], body, timeout);
+        if isstruct(r) && isfield(r, 'error')
+            error('ru:engine', '%s', char(r.error));    % curl returns the engine's error as JSON
+        end
         err = '';
         break
     catch ME
@@ -5336,7 +6419,7 @@ L = local_loaded(E.host);
 if any(strcmp({L.name}, E.model))
     return
 end
-body = struct('model', E.model, 'stream', false, 'keep_alive', '60m');
+body = struct('model', E.model, 'stream', false, 'keep_alive', local_keepAlive());
 body.messages = {local_msg('system', sys)};
 body.options = local_options(0.1, E.ctx, 1);
 if any(strcmp(E.caps, 'thinking'))
@@ -5347,15 +6430,25 @@ local_writeText(f, jsonencode(body));
 url = [E.host '/api/chat'];
 try
     if ispc && ~exist('OCTAVE_VERSION', 'builtin')
-        curl = fullfile(getenv('SystemRoot'), 'System32', 'curl.exe');
-        if exist(curl, 'file') ~= 2 || ~usejava('jvm')
+        curl = local_curlExe();
+        if isempty(curl)
             return
         end
-        pb = java.lang.ProcessBuilder({curl, '-s', '-m', '3600', '-o', 'NUL', '-H', 'Content-Type: application/json', ...
-            '--data-binary', ['@' f], url});
-        pb.redirectErrorStream(true);
-        pb.redirectOutput(java.io.File(fullfile(local_brain(root), 'warmup.log')));
-        pb.start();
+        logw = fullfile(local_brain(root), 'warmup.log');
+        if ~local_newDesktop() && usejava('jvm')
+            pb = java.lang.ProcessBuilder({curl, '-s', '--noproxy', '*', '-m', '3600', '-o', 'NUL', '-H', ...
+                'Content-Type: application/json', '--data-binary', ['@' f], url});
+            pb.redirectErrorStream(true);
+            pb.redirectOutput(java.io.File(logw));
+            pb.start();
+        else
+            % MATLAB R2025a+ (no Java at start): a small minimized window that closes when the model is loaded.
+            bat = fullfile(local_brain(root), 'ru_warmup.bat');
+            local_writeText(bat, sprintf(['@echo off\r\nchcp 65001 >nul\r\n"%s" -s --noproxy "*" -m 3600 -o NUL ' ...
+                '-H "Content-Type: application/json" --data-binary "@%s" "%s" > "%s" 2>&1\r\nexit\r\n'], ...
+                local_batText(curl), local_batText(f), url, local_batText(logw)));
+            [~, ~] = system(sprintf('start "ru loading the AI model" /min "%s"', bat));
+        end
     else
         [~, ~] = system(sprintf(['curl -s -m 3600 -o /dev/null -H "Content-Type: application/json" ' ...
             '--data-binary "@%s" "%s" > /dev/null 2>&1 &'], f, url));
@@ -5409,6 +6502,17 @@ else
     end
 end
 fprintf('GPU setting     : %s  (ru gpu auto | on | off)\n', gmode);
+if strcmp(gmode, 'off') || prof.cpuOnly || (strcmp(gmode, 'auto') && prof.gpuChecked && prof.noGpu)
+    fprintf('Engine start    : fast (no usable graphics card, so the engine skips its graphics check)\n');
+end
+if local_draftN() > 0
+    fprintf('Fast decoding   : on (MTP, %d tokens checked at once; same answers, written faster)\n', local_draftN());
+elseif prof.noDraft
+    fprintf('Fast decoding   : off (it failed on this PC before)\n');
+else
+    fprintf('Fast decoding   : off (this processor would not gain from it)\n');
+end
+fprintf('Model in memory : kept for %s after the last question (ru stop frees it)\n', local_keepAlive());
 fprintf('MATLAB          : %s\n', version);
 fprintf('%s\n', env.toolboxLine(1:find(env.toolboxLine == '.', 1)));
 fprintf('Solver library  : %d functions (ru_lib)\n', numel(kb.lib));
@@ -5455,6 +6559,14 @@ for k = 1:numel(P)
         fprintf(' | here it reads %.0f and writes %.1f tokens/s', pp, tg);
     end
     fprintf('\n');
+    cold = local_modelStat(root, P(k).name, 'coldLoad');
+    if cold > 0
+        fprintf('  first load here: %.0f s', cold);
+        if cold > 150
+            fprintf(' - slow: plug the pendrive into a USB 3 port (blue) or use a faster drive');
+        end
+        fprintf('\n');
+    end
 end
 hosts = local_hosts(root);
 for k = 1:numel(hosts)
@@ -5485,8 +6597,8 @@ why = local_engineProblem();
 if ~isempty(why)
     fprintf(2, 'Engine problem  : %s\n', why);
 end
-fprintf('Model setting   : text %s, vision %s  (ru model <name|auto>, ru vision <name|auto>)\n', ...
-    local_setting(root, 'model', 'auto'), local_setting(root, 'vision', 'auto'));
+fprintf('Model on this PC: text %s, vision %s  (ru model <name|auto>, ru vision <name|auto>)\n', ...
+    local_modelChoice(root, 'model'), local_modelChoice(root, 'vision'));
 [H, M, S] = local_findModels(hosts);
 if isempty(M)
     fprintf(2, 'ru will use     : nothing yet - run  ru start\n');
@@ -5495,11 +6607,11 @@ else
     for k = 1:numel(M)
         infos{k} = local_modelInfo(H{k}, M{k});
     end
-    [k, why] = local_chooseModel(root, H, M, S, infos, local_setting(root, 'model', 'auto'), 'text', {});
+    [k, why] = local_chooseModel(root, H, M, S, infos, local_modelChoice(root, 'model'), 'text', {});
     if k > 0
         fprintf('Text model      : %s (%s)\n', M{k}, why);
     end
-    [k, why] = local_chooseModel(root, H, M, S, infos, local_setting(root, 'vision', 'auto'), 'vision', {});
+    [k, why] = local_chooseModel(root, H, M, S, infos, local_modelChoice(root, 'vision'), 'vision', {});
     if k == 0
         why = local_engineProblem();
         if isempty(why)
@@ -5510,7 +6622,20 @@ else
         fprintf('Image model     : %s (%s)\n', M{k}, why);
     end
 end
+fprintf('Double-check    : %s  (ru sure auto | on | off; ru sure <problem> for one problem)\n', ...
+    local_setting(root, 'sure', 'auto'));
 fprintf('\n');
+% ru status is usually the first command: load the model now, while the user reads.
+try
+    E = local_engine(root, false, 'text');
+    local_busy('');
+    if ~isempty(E.model) && local_isLocalHost(E.host) && ~local_isLoaded(E)
+        local_warmup(root, E, local_systemStatic(root, env, kb));
+        fprintf('[ru] %s is loading into memory in the background; start working.\n\n', E.model);
+    end
+catch
+    local_busy('');
+end
 end
 
 function local_settingCommand(root, key, value)
@@ -5534,6 +6659,24 @@ if strcmp(key, 'verbose')
     end
     return
 end
+if strcmp(key, 'sure')
+    if isempty(value)
+        fprintf(['[ru] sure: %s  (ru sure auto | on | off)\n' ...
+            '[ru] A second, independent solution checks every AI-written answer (auto: when it takes under ~2 min here).\n'], ...
+            local_setting(root, 'sure', 'auto'));
+        return
+    end
+    v = lower(value);
+    if ~any(strcmp(v, {'auto', 'on', 'off'}))
+        fprintf(2, '[ru] Use: ru sure auto (recommended) | ru sure on (always) | ru sure off (never)\n');
+        return
+    end
+    local_setSetting(root, 'sure', v);
+    msg = struct('auto', 'when the second solution takes under ~2 minutes on the PC', 'on', 'always (slower)', ...
+        'off', 'never (only for  ru sure <problem>)');
+    fprintf('[ru] sure %s: AI-written answers are double-checked by an independent solution %s.\n', v, msg.(v));
+    return
+end
 if strcmp(key, 'gpu')
     if isempty(value)
         fprintf('[ru] gpu: %s  (ru gpu auto | on | off); details: ru status\n', local_setting(root, 'gpu', 'auto'));
@@ -5549,6 +6692,7 @@ if strcmp(key, 'gpu')
     P.cpuOnly = false;
     if strcmp(v, 'auto')
         P.gpuChecked = false;                 % detect the graphics devices again at the next start
+        P.noGpu = false;
         P.gpuEnv = struct();
     end
     local_profile(root, P);
@@ -5560,23 +6704,70 @@ if strcmp(key, 'gpu')
     end
     return
 end
+if any(strcmp(key, {'model', 'vision'}))
+    local_modelCommand(root, key, value);
+    return
+end
 if isempty(value)
-    fprintf('[ru] %s setting: %s\n', key, local_setting(root, settingKey, 'auto'));
-    [~, M] = local_findModels(local_hosts(root));
-    if isempty(M)
-        fprintf('[ru] No engine is running. Start it with: ru start\n');
-    else
-        fprintf('[ru] Installed models: %s\n', strjoin(unique(M), ', '));
-    end
+    fprintf('[ru] %s setting: %s\n', key, local_setting(root, settingKey, ''));
     return
 end
 local_setSetting(root, settingKey, strtrim(value));
 fprintf('[ru] %s set to %s\n', key, strtrim(value));
 end
 
+function local_modelCommand(root, key, value)
+% ru model <name|auto> / ru vision <name|auto>: chosen per PC (other PCs keep their own choice).
+value = regexprep(strtrim(value), '^["'']|["'']$', '');
+names = local_installedNames(root);
+what = 'problems';
+if strcmp(key, 'vision')
+    what = 'pictures (ru img)';
+end
+if isempty(value)
+    fprintf('[ru] Model for %s on this PC: %s\n', what, local_modelChoice(root, key));
+    if isempty(names)
+        fprintf('[ru] No model found (no engine running and none on the pendrive). Check: ru status\n');
+    else
+        fprintf('[ru] Installed models: %s\n', strjoin(names, ', '));
+    end
+    return
+end
+if strcmpi(value, 'auto')
+    choice = 'auto';
+else
+    choice = '';
+    hit = local_matchModel(value, names);
+    if hit > 0
+        choice = names{hit};
+    elseif isempty(names)
+        choice = value;
+        fprintf(2, '[ru] Could not check the name (no engine running, no model on the pendrive).\n');
+    else
+        fprintf(2, '[ru] "%s" is not installed. Installed models: %s\n', value, strjoin(names, ', '));
+        dist = cellfun(@(n) local_editDistance(value, regexprep(n, ':latest$', '')), names);
+        [dmin, j] = min(dist);
+        if dmin <= 3
+            fprintf(2, '[ru] Did you mean:  ru %s %s\n', key, names{j});
+        end
+        fprintf(2, '[ru] Nothing changed. To download a model run setup_ru.bat on a PC with internet.\n');
+        return
+    end
+end
+P = local_profile(root);
+P.(key) = choice;
+local_profile(root, P);
+if strcmp(choice, 'auto')
+    fprintf('[ru] This PC is back to the default: the strongest installed model (qwen3.5:9b when it is on the pendrive).\n');
+else
+    fprintf('[ru] This PC now uses %s for %s. Other PCs keep the default (the strongest model); back to it: ru %s auto\n', ...
+        choice, what, key);
+end
+end
+
 function v = local_setting(root, key, default)
 v = default;
-f = fullfile(root, 'brain', 'settings.txt');
+f = fullfile(local_brain(root), 'settings.txt');
 if exist(f, 'file') ~= 2
     return
 end

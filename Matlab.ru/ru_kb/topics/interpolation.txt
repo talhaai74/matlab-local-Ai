@@ -8,7 +8,10 @@ CHEATSHEET:
   (centered around it) for each order, e.g. [~,o] = sort(abs(x - xi)); idx = sort(o(1:n+1)).
 - polyfit(x,y,n) with n = numel(x)-1 passes through all points; for large x (years) center first:
   [p,S,mu] = polyfit(x,y,n); polyval(p,xi,S,mu).
-- Splines: spline(x,y,xi) not-a-knot; clamped end slopes s0, sn: spline(x,[s0 y sn],xi); natural: interp_natspline(x,y,xi);
+- Linear interpolation at xi = interp1(x,y,xi) (straight line through the two neighbouring points only);
+  it is NOT linear regression (polyfit(x,y,1) over all points).
+- Splines: spline(x,y,xi) not-a-knot; clamped end slopes s0, sn: spline(x,[s0 y sn],xi) ("clamped, zero end
+  derivatives" = spline(x,[0 y 0],xi); plain spline(x,y,xi) is NOT clamped); natural: interp_natspline(x,y,xi);
   pchip(x,y,xi); interp1(x,y,xi,'linear'|'nearest'|'spline'|'pchip'); 2-D: interp2(X,Y,Z,xi,yi,'linear').
 - Inverse interpolation (find x for a given y): fit p = polyfit(...) then roots/ fzero(@(x) polyval(p,x) - ytarget, x0).
 - True percent relative error: et = abs((true - estimate)/true)*100 (e.g. besselj(1,2.1) for J1).
